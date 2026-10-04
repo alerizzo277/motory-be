@@ -44,7 +44,35 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
-## Run tests
+## Email transazionali (Resend)
+
+`MailModule` esporta `MailService`: i moduli applicativi possono importare il
+modulo e chiamare `sendEmail({ to, subject, html })`, che restituisce `{ id }`.
+Resend rimane confinato al servizio. Errori API o di rete diventano
+`BadGatewayException` (HTTP 502), con la causa originale preservata.
+
+Configurare nel `.env` locale (non versionato):
+
+```ini
+RESEND_API_KEY=re_xxxxxxxxx
+MAIL_FROM=onboarding@resend.dev
+```
+
+Prima del test, sostituire `re_xxxxxxxxx` con la vera API key Resend.
+Lo script rifiuta di inviare se trova il placeholder.
+
+```bash
+npm run mail:test
+```
+
+Il test avvia solo il contesto Nest del modulo mail, senza server HTTP o Prisma,
+e invia a `alerizzo277@gmail.com` con oggetto `Motory - Resend test`.
+L'ID stampato indica che Resend ha accettato il messaggio, non la consegna finale.
+Con il mittente di test `onboarding@resend.dev`, il destinatario deve essere
+l'indirizzo associato al proprio account Resend; per altri destinatari occorre
+un dominio verificato.
+
+## Test automatici
 
 ```bash
 # unit tests
