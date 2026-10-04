@@ -8,6 +8,8 @@ describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
 
   beforeEach(async () => {
+    vi.stubEnv('JWT_SECRET', 'test-only-secret-with-at-least-32-characters');
+    vi.stubEnv('JWT_EXPIRES_IN', '3600');
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -24,6 +26,7 @@ describe('AppController (e2e)', () => {
   });
 
   afterEach(async () => {
-    await app.close();
+    await app?.close();
+    vi.unstubAllEnvs();
   });
 });

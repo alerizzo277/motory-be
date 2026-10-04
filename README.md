@@ -150,3 +150,127 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+## Autenticazione — Fase 1
+
+Sono disponibili le mutation `register`, `login` e la query protetta `me`.
+Non vengono inviate email e non sono implementati refresh token o funzioni di Fase 2.
+
+### Configurazione e migration
+
+Aggiungere a `.env` (vedi `.env.example`):
+- `JWT_SECRET`: secret casuale di almeno 32 caratteri.
+- `JWT_EXPIRES_IN`: intero positivo espresso in **secondi**, ad esempio `3600`.
+
+Per generare un secret: `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`.
+
+Le variabili esistenti di database e mail restano necessarie per avviare l'applicazione,
+perché il modulo mail è già importato; l'autenticazione non utilizza il servizio mail.
+
+Dopo aver configurato PostgreSQL:
+
+```sh
+npx prisma migrate deploy --config prisma7.config.ts
+npx prisma generate --config prisma7.config.ts
+npm run start:dev
+```
+
+La tabella Prisma `Role` resta l'unica fonte di verità del ruolo:
+`User.roleId -> Role.id`, con relazione obbligatoria `User.role`.
+Il campo univoco `Role.name` è il codice semantico esistente (USER, ADMIN, ecc.).
+La registrazione cerca il record con `name: 'USER'` e assegna il suo ID:
+non crea ruoli e, se USER manca, restituisce `INTERNAL_SERVER_ERROR`.
+Il seed idempotente assicura USER e ADMIN:
+
+```sh
+npx prisma db seed --config prisma7.config.ts
+```
+
+Login e me caricano la relazione e restituiscono `role: user.role.name` come
+stringa GraphQL; il JWT usa lo stesso codice. Il database non contiene un campo
+scalare del ruolo sull'utente. Nuovi ruoli possono essere aggiunti come record
+senza cambiare lo schema o una lista di valori nella strategia JWT.
+La migration `20261004120000_auth_phase_one`, non ancora applicata al momento
+della correzione, è stata corretta direttamente: non modifica le tabelle dei ruoli.
+La migration normalizza le email esistenti. Se la normalizzazione provoca collisioni,
+la transazione viene annullata: risolvere i duplicati prima di riprovare, senza
+cancellazioni automatiche.
+
+### Prova manuale GraphQL
+
+Inviare le operazioni separatamente a `http://localhost:3000/graphql`.
+
+```graphql
+mutation {
+  register(input: {
+    email: "Mario@example.com"
+    password: "password123"
+    firstName: "Mario"
+    lastName: "Rossi"
+  }) {
+    id
+    email
+    role
+  }
+}
+```
+
+La registrazione restituisce l'utente, senza effettuare login. Nel database
+`passwordHash` deve iniziare con `$argon2id$`.
+
+```graphql
+mutation {
+  login(input: { email: "mario@example.com", password: "password123" }) {
+    accessToken
+    user { id email firstName lastName role }
+  }
+}
+```
+
+Per la query seguente impostare l'header HTTP `Authorization: Bearer <accessToken>`:
+
+```graphql
+query {
+  me {
+    id
+    email
+    firstName
+    lastName
+    role
+    createdAt
+    updatedAt
+  }
+}
+```
+
+Ripetere `me` senza token, con token invalido o scaduto:
+`extensions.code` deve essere `UNAUTHENTICATED`.
+Una password errata o un'email inesistente producono lo stesso messaggio e
+`INVALID_CREDENTIALS`. Registrare nuovamente la stessa email, anche con maiuscole,
+produce `EMAIL_ALREADY_EXISTS`.
+
+I codici applicativi sono `EMAIL_ALREADY_EXISTS`, `INVALID_CREDENTIALS`,
+`UNAUTHENTICATED`, `USER_NOT_FOUND`, `VALIDATION_ERROR` e
+`INTERNAL_SERVER_ERROR`. Un token valido associato a un utente eliminato produce
+`USER_NOT_FOUND`. Gli errori di validazione includono `extensions.fields`
+con il campo e i messaggi, senza valori degli input. I dettagli interni e gli
+stack trace non vengono restituiti al frontend.
+
+Le password accettate in registrazione hanno 8–128 caratteri; i nomi, dopo trim,
+1–100 caratteri. Le password non vengono modificate da trim.
+Il JWT usa HS256 e contiene `sub`, `role` e i claim temporali `iat`/`exp`.
+Il ruolo nel JWT non introduce autorizzazioni ADMIN; `me` legge sempre i dati aggiornati.
+
+### Verifica automatizzata
+
+```sh
+npm run build
+npm run lint
+npm test
+npm run test:e2e
+```
+
+La suite e2e esegue prima la build per mantenere i metadata dei decorator Nest
+necessari alla validazione. I test auth usano Prisma simulato e Argon2/JWT reali:
+flusso completo, email duplicate, errori credenziali, token invalidi/scaduti,
+utente eliminato, validazione e mancata esposizione di hash e dettagli interni.
