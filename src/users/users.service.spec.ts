@@ -42,4 +42,37 @@ describe('UsersService registration races', () => {
       },
     });
   });
+  it('normalizes persistence data and ignores fields outside the creation contract', async () => {
+    const prisma = {
+      role: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ id: 'user-role-id', name: 'USER' }),
+      },
+      user: { create: vi.fn().mockResolvedValue({}) },
+    };
+    const users = new UsersService(prisma as unknown as PrismaService);
+    const data = {
+      email: ' Alice@Example.com ',
+      firstName: ' Alice ',
+      lastName: ' Rossi ',
+      passwordHash: 'hash',
+      roleId: 'admin-role-id',
+      role: { connect: { name: 'ADMIN' } },
+    };
+    await users.create(data);
+    expect(prisma.role.findUnique).toHaveBeenCalledWith({
+      where: { name: 'USER' },
+    });
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      include: { role: true },
+      data: {
+        email: 'alice@example.com',
+        firstName: 'Alice',
+        lastName: 'Rossi',
+        passwordHash: 'hash',
+        roleId: 'user-role-id',
+      },
+    });
+  });
 });

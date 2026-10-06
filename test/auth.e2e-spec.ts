@@ -11,6 +11,7 @@ import { verify } from 'argon2';
 // Compiled Nest classes retain decorator metadata, including DTO validation types.
 import { AuthModule } from '../dist/auth/auth.module.js';
 import { PrismaService } from '../dist/prisma/prisma.service.js';
+import { Prisma } from '../dist/generated/prisma/client.js';
 import { formatGraphqlError } from '../dist/common/graphql-errors.js';
 import type { Role, User } from '../src/generated/prisma/client.js';
 
@@ -112,7 +113,10 @@ describe('Authentication GraphQL', () => {
     await app?.close();
   });
   it('registers without login, hashes with Argon2id, logs in and reads fresh user data', async () => {
+    const sign = vi.spyOn(app.get(JwtService), 'signAsync');
     const registered = await gql(register, { input });
+    expect(sign).not.toHaveBeenCalled();
+    sign.mockRestore();
     expect(registered.body.errors).toBeUndefined();
     expect(registered.body.data.register).toMatchObject({
       email: 'alice@example.com',
@@ -156,6 +160,53 @@ describe('Authentication GraphQL', () => {
       input: { ...input, email: 'ALICE@example.com' },
     });
     expect(result.body.errors[0].extensions.code).toBe('EMAIL_ALREADY_EXISTS');
+  });
+  it('preserves password whitespace during registration and login', async () => {
+    const password = ' password123 ';
+    const result = await gql(register, { input: { ...input, password } });
+    expect(result.body.errors).toBeUndefined();
+    expect(await verify(stored!.passwordHash, password)).toBe(true);
+    expect(await verify(stored!.passwordHash, password.trim())).toBe(false);
+    expect(
+      (await gql(login, { input: { email: input.email, password } })).body
+        .errors,
+    ).toBeUndefined();
+  });
+  it.each(['role', 'roleId'])(
+    'rejects client-controlled %s before persistence',
+    async (field) => {
+      const result = await gql(register, {
+        input: { ...input, [field]: 'ADMIN' },
+      });
+      expect(result.body.errors[0].extensions.code).toBe('VALIDATION_ERROR');
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(stored).toBeNull();
+    },
+  );
+  it('maps a concurrent email collision without leaking Prisma details', async () => {
+    prisma.user.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Private SQL detail', {
+        code: 'P2002',
+        clientVersion: '7.10.0',
+        meta: { target: ['email'] },
+      }),
+    );
+    const result = await gql(register, { input });
+    expect(result.body.errors[0].extensions).toEqual({
+      code: 'EMAIL_ALREADY_EXISTS',
+    });
+    expect(JSON.stringify(result.body)).not.toContain('Private SQL detail');
+    expect(JSON.stringify(result.body)).not.toContain('P2002');
+  });
+  it('keeps the registration input limited to the four public fields', async () => {
+    const result = await gql(
+      '{ __type(name: "RegisterInput") { inputFields { name } } }',
+    );
+    expect(
+      result.body.data.__type.inputFields
+        .map((field: { name: string }) => field.name)
+        .sort(),
+    ).toEqual(['email', 'firstName', 'lastName', 'password']);
   });
   it('uses identical errors for absent email and incorrect password', async () => {
     await gql(register, { input });
