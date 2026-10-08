@@ -51,3 +51,25 @@ export class RegisterInput {
   @Length(1, 100)
   lastName: string;
 }
+
+@InputType()
+export class EmailInput {
+  @Field(() => String)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? normalizeEmail(value) : value,
+  )
+  @IsEmail()
+  @MaxLength(254)
+  email: string;
+}
+@InputType()
+export class ResetPasswordInput {
+  @Field(() => String)
+  @IsString()
+  @Length(1, 256)
+  token: string;
+  @Field(() => String)
+  @IsString()
+  @Length(8, 128)
+  newPassword: string;
+}

@@ -2,6 +2,9 @@ import { GraphQLError, type GraphQLFormattedError } from 'graphql';
 import { ValidationPipe } from '@nestjs/common';
 
 export type ErrorCode =
+  | 'EMAIL_NOT_VERIFIED'
+  | 'VERIFICATION_TOKEN_INVALID'
+  | 'PASSWORD_RESET_TOKEN_INVALID'
   | 'EMAIL_ALREADY_EXISTS'
   | 'INVALID_CREDENTIALS'
   | 'UNAUTHENTICATED'
@@ -33,6 +36,9 @@ export function authValidationPipe(): ValidationPipe {
   });
 }
 const publicCodes = new Set([
+  'EMAIL_NOT_VERIFIED',
+  'VERIFICATION_TOKEN_INVALID',
+  'PASSWORD_RESET_TOKEN_INVALID',
   'EMAIL_ALREADY_EXISTS',
   'INVALID_CREDENTIALS',
   'UNAUTHENTICATED',

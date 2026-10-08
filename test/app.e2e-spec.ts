@@ -10,6 +10,7 @@ describe('AppController (e2e)', () => {
   beforeEach(async () => {
     vi.stubEnv('JWT_SECRET', 'test-only-secret-with-at-least-32-characters');
     vi.stubEnv('JWT_EXPIRES_IN', '3600');
+    vi.stubEnv('FRONTEND_URL', 'http://localhost:5173');
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();

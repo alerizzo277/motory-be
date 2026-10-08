@@ -151,10 +151,12 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
 
-## Autenticazione — Fase 1
+## Autenticazione — Fase 1 (riferimento storico)
 
 Sono disponibili le mutation `register`, `login` e la query protetta `me`.
-Non vengono inviate email e non sono implementati refresh token o funzioni di Fase 2.
+La Fase 2 è ora implementata: prima del login occorre verificare l’email.
+Vedi [contratto, flussi e configurazione Fase 2](docs/auth-phase-two.md).
+Le istruzioni seguenti descrivono la base della Fase 1.
 
 ### Configurazione e migration
 
@@ -165,7 +167,7 @@ Aggiungere a `.env` (vedi `.env.example`):
 Per generare un secret: `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`.
 
 Le variabili esistenti di database e mail restano necessarie per avviare l'applicazione,
-perché il modulo mail è già importato; l'autenticazione non utilizza il servizio mail.
+perché il modulo mail è importato. La Fase 2 usa MailService per verifica e reset.
 
 Dopo aver configurato PostgreSQL:
 

@@ -1,3 +1,5 @@
+import { PrismaModule } from '../prisma/prisma.module.js';
+import { MailModule } from '../mail/mail.module.js';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, type JwtModuleOptions } from '@nestjs/jwt';
@@ -10,6 +12,8 @@ import { GqlAuthGuard } from './guards/gql-auth.guard.js';
 @Module({
   imports: [
     UsersModule,
+    PrismaModule,
+    MailModule,
     PassportModule,
     JwtModule.registerAsync({
       inject: [ConfigService],

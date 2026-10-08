@@ -1,7 +1,12 @@
 import { Inject, UseGuards, UsePipes } from '@nestjs/common';
 import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { AuthService } from './auth.service.js';
-import { LoginInput, RegisterInput } from './dto/auth.input.js';
+import {
+  EmailInput,
+  ResetPasswordInput,
+  LoginInput,
+  RegisterInput,
+} from './dto/auth.input.js';
 import { AuthPayload } from './models/auth-payload.model.js';
 import { User } from '../users/models/user.model.js';
 import { GqlAuthGuard } from './guards/gql-auth.guard.js';
@@ -19,6 +24,27 @@ export class AuthResolver {
   @Mutation(() => AuthPayload)
   login(@Args('input', { type: () => LoginInput }) input: LoginInput) {
     return this.auth.login(input);
+  }
+  @Mutation(() => Boolean)
+  verifyEmail(@Args('token', { type: () => String }) token: string) {
+    return this.auth.verifyEmail(token);
+  }
+  @Mutation(() => Boolean)
+  resendVerificationEmail(
+    @Args('input', { type: () => EmailInput }) input: EmailInput,
+  ) {
+    return this.auth.resendVerificationEmail(input.email);
+  }
+  @Mutation(() => Boolean)
+  forgotPassword(@Args('input', { type: () => EmailInput }) input: EmailInput) {
+    return this.auth.forgotPassword(input.email);
+  }
+  @Mutation(() => Boolean)
+  resetPassword(
+    @Args('input', { type: () => ResetPasswordInput })
+    input: ResetPasswordInput,
+  ) {
+    return this.auth.resetPassword(input.token, input.newPassword);
   }
   @Query(() => User)
   @UseGuards(GqlAuthGuard)

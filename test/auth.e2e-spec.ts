@@ -1,3 +1,10 @@
+import { readFileSync } from 'node:fs';
+import {
+  buildClientSchema,
+  getIntrospectionQuery,
+  parse,
+  validate,
+} from 'graphql';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -6,19 +13,45 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { verify } from 'argon2';
 // Compiled Nest classes retain decorator metadata, including DTO validation types.
 import { AuthModule } from '../dist/auth/auth.module.js';
 import { PrismaService } from '../dist/prisma/prisma.service.js';
 import { Prisma } from '../dist/generated/prisma/client.js';
 import { formatGraphqlError } from '../dist/common/graphql-errors.js';
-import type { Role, User } from '../src/generated/prisma/client.js';
+import { MailService } from '../dist/mail/mail.service.js';
+import type {
+  ActionToken,
+  Role,
+  User,
+} from '../src/generated/prisma/client.js';
 
 describe('Authentication GraphQL', () => {
   let app: INestApplication<App>;
   let stored: User | null;
   let roles: Role[];
+  let tokens: ActionToken[] = [];
+  const mail = {
+    sendVerificationEmail: vi.fn().mockResolvedValue({ id: 'mail' }),
+    sendPasswordResetEmail: vi.fn().mockResolvedValue({ id: 'mail' }),
+  };
+  const digest = (token: string) =>
+    createHash('sha256').update(token).digest('hex');
+  const rawToken = (reset = false): string => {
+    const calls = (
+      reset ? mail.sendPasswordResetEmail : mail.sendVerificationEmail
+    ).mock.calls;
+    return new URL(calls.at(-1)![1] as string).searchParams.get('token')!;
+  };
+  const verifyEmail =
+    'mutation($token: String!) { verifyEmail(token: $token) }';
+  const resend =
+    'mutation($input: EmailInput!) { resendVerificationEmail(input: $input) }';
+  const forgot =
+    'mutation($input: EmailInput!) { forgotPassword(input: $input) }';
+  const reset =
+    'mutation($input: ResetPasswordInput!) { resetPassword(input: $input) }';
   let failDatabase = false;
   const secret = 'test-only-secret-with-at-least-32-characters';
   const fields = 'id email firstName lastName role createdAt updatedAt';
@@ -36,13 +69,53 @@ describe('Authentication GraphQL', () => {
     firstName: ' Alice ',
     lastName: ' Rossi ',
   };
+  type TokenWhere = {
+    tokenHash?: string;
+    userId?: string;
+    type?: string;
+    userId_type?: { userId: string; type: string };
+  };
+  const matches = (item: ActionToken, where: TokenWhere) =>
+    (!where.tokenHash || item.tokenHash === where.tokenHash) &&
+    (!where.userId || item.userId === where.userId) &&
+    (!where.type || item.type === where.type) &&
+    (!where.userId_type ||
+      (item.userId === where.userId_type.userId &&
+        item.type === where.userId_type.type));
   const prisma = {
+    $queryRaw: vi.fn().mockResolvedValue([]),
+    actionToken: {
+      findUnique: vi.fn(({ where }: { where: TokenWhere }) =>
+        Promise.resolve(tokens.find((item) => matches(item, where)) ?? null),
+      ),
+      deleteMany: vi.fn(({ where }: { where: TokenWhere }) => {
+        const before = tokens.length;
+        tokens = tokens.filter((item) => !matches(item, where));
+        return Promise.resolve({ count: before - tokens.length });
+      }),
+      delete: vi.fn(({ where }: { where: TokenWhere }) => {
+        const found = tokens.find((item) => matches(item, where));
+        tokens = tokens.filter((item) => !matches(item, where));
+        return Promise.resolve(found);
+      }),
+      create: vi.fn(
+        ({ data }: { data: Omit<ActionToken, 'id' | 'createdAt'> }) => {
+          const item = { ...data, id: randomUUID(), createdAt: new Date() };
+          tokens.push(item);
+          return Promise.resolve(item);
+        },
+      ),
+    },
     role: {
       findUnique: vi.fn(({ where }: { where: { name: string } }) =>
         Promise.resolve(roles.find((role) => role.name === where.name) ?? null),
       ),
     },
     user: {
+      update: vi.fn(({ data }: { data: Partial<User> }) => {
+        Object.assign(stored!, data);
+        return Promise.resolve(stored);
+      }),
       findUnique: vi.fn(
         ({ where }: { where: { email?: string; id?: string } }) => {
           if (failDatabase) throw new Error('Sensitive database detail');
@@ -60,6 +133,7 @@ describe('Authentication GraphQL', () => {
         ({ data }: { data: Omit<User, 'id' | 'createdAt' | 'updatedAt'> }) => {
           stored = {
             ...data,
+            emailVerifiedAt: null,
             id: randomUUID(),
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -70,6 +144,20 @@ describe('Authentication GraphQL', () => {
           });
         },
       ),
+    },
+  };
+  const transactionalPrisma = {
+    ...prisma,
+    $transaction: async (callback: (tx: typeof prisma) => Promise<unknown>) => {
+      const beforeUser = stored ? { ...stored } : null;
+      const beforeTokens = [...tokens];
+      try {
+        return await callback(prisma);
+      } catch (error) {
+        stored = beforeUser;
+        tokens = beforeTokens;
+        throw error;
+      }
     },
   };
   function gql(query: string, variables = {}, token?: string) {
@@ -83,7 +171,15 @@ describe('Authentication GraphQL', () => {
         ConfigModule.forRoot({
           isGlobal: true,
           ignoreEnvFile: true,
-          load: [() => ({ JWT_SECRET: secret, JWT_EXPIRES_IN: '3600' })],
+          load: [
+            () => ({
+              JWT_SECRET: secret,
+              JWT_EXPIRES_IN: '3600',
+              FRONTEND_URL: 'https://motory.example',
+              EMAIL_VERIFICATION_TOKEN_TTL_MINUTES: '1440',
+              PASSWORD_RESET_TOKEN_TTL_MINUTES: '60',
+            }),
+          ],
         }),
         GraphQLModule.forRoot<ApolloDriverConfig>({
           driver: ApolloDriver,
@@ -95,13 +191,16 @@ describe('Authentication GraphQL', () => {
       ],
     })
       .overrideProvider(PrismaService)
-      .useValue(prisma)
+      .useValue(transactionalPrisma)
+      .overrideProvider(MailService)
+      .useValue(mail)
       .compile();
-    app = module.createNestApplication();
+    app = module.createNestApplication({ logger: false });
     await app.init();
   });
   beforeEach(() => {
     stored = null;
+    tokens = [];
     roles = [
       { id: randomUUID(), name: 'USER' },
       { id: randomUUID(), name: 'ADMIN' },
@@ -131,6 +230,7 @@ describe('Authentication GraphQL', () => {
     });
     expect(stored?.passwordHash).toMatch(/^\$argon2id\$/);
     expect(await verify(stored!.passwordHash, input.password)).toBe(true);
+    stored!.emailVerifiedAt = new Date();
     const authenticated = await gql(login, {
       input: { email: input.email, password: input.password },
     });
@@ -167,6 +267,7 @@ describe('Authentication GraphQL', () => {
     expect(result.body.errors).toBeUndefined();
     expect(await verify(stored!.passwordHash, password)).toBe(true);
     expect(await verify(stored!.passwordHash, password.trim())).toBe(false);
+    stored!.emailVerifiedAt = new Date();
     expect(
       (await gql(login, { input: { email: input.email, password } })).body
         .errors,
@@ -263,6 +364,7 @@ describe('Authentication GraphQL', () => {
   it('derives ADMIN and future role codes from the relation for login and fresh me', async () => {
     await gql(register, { input });
     stored!.roleId = roles.find((role) => role.name === 'ADMIN')!.id;
+    stored!.emailVerifiedAt = new Date();
     const authenticated = await gql(login, {
       input: { email: input.email, password: input.password },
     });
@@ -301,5 +403,222 @@ describe('Authentication GraphQL', () => {
     );
     expect(names).not.toContain('passwordHash');
     expect(names).not.toContain('roleId');
+  });
+  it('registers unverified with only a SHA-256 token and sends the configured verification URL', async () => {
+    await gql(register, { input });
+    expect(stored!.emailVerifiedAt).toBeNull();
+    const token = rawToken();
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].tokenHash).toBe(digest(token));
+    expect(JSON.stringify(tokens)).not.toContain(token);
+    expect(tokens[0].type).toBe('EMAIL_VERIFICATION');
+    expect(tokens[0].expiresAt.getTime() - Date.now()).toBeGreaterThan(
+      1439 * 60000,
+    );
+    expect(mail.sendVerificationEmail).toHaveBeenCalledWith(
+      'alice@example.com',
+      expect.stringContaining('https://motory.example/verify-email?token='),
+      1440,
+    );
+    const sign = vi.spyOn(app.get(JwtService), 'signAsync');
+    const result = await gql(login, {
+      input: { email: input.email, password: input.password },
+    });
+    expect(result.body.errors[0].extensions.code).toBe('EMAIL_NOT_VERIFIED');
+    expect(sign).not.toHaveBeenCalled();
+    sign.mockRestore();
+  });
+  it('verifies once, deletes the token and then allows login', async () => {
+    await gql(register, { input });
+    const token = rawToken();
+    expect((await gql(verifyEmail, { token })).body.data.verifyEmail).toBe(
+      true,
+    );
+    expect(stored!.emailVerifiedAt).toBeInstanceOf(Date);
+    expect(tokens).toHaveLength(0);
+    expect(
+      (await gql(verifyEmail, { token })).body.errors[0].extensions.code,
+    ).toBe('VERIFICATION_TOKEN_INVALID');
+    expect(
+      (
+        await gql(login, {
+          input: { email: input.email, password: input.password },
+        })
+      ).body.data.login.accessToken,
+    ).toEqual(expect.any(String));
+  });
+  it('rejects expired, missing and wrong-type verification tokens', async () => {
+    await gql(register, { input });
+    tokens[0].expiresAt = new Date(Date.now() - 1);
+    for (const token of [rawToken(), 'missing'])
+      expect(
+        (await gql(verifyEmail, { token })).body.errors[0].extensions.code,
+      ).toBe('VERIFICATION_TOKEN_INVALID');
+    await gql(forgot, { input: { email: input.email } });
+    expect(
+      (await gql(verifyEmail, { token: rawToken(true) })).body.errors[0]
+        .extensions.code,
+    ).toBe('VERIFICATION_TOKEN_INVALID');
+    expect(stored!.emailVerifiedAt).toBeNull();
+  });
+  it('resends after cooldown, replaces old token and returns neutral responses', async () => {
+    await gql(register, { input });
+    const original = rawToken();
+    const variables = { input: { email: input.email } };
+    const first = await gql(resend, variables);
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(1);
+    tokens[0].createdAt = new Date(Date.now() - 61000);
+    expect((await gql(resend, variables)).body).toEqual(first.body);
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(2);
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].tokenHash).not.toBe(digest(original));
+    expect(
+      (await gql(verifyEmail, { token: original })).body.errors[0].extensions
+        .code,
+    ).toBe('VERIFICATION_TOKEN_INVALID');
+    expect(
+      (await gql(resend, { input: { email: 'missing@example.com' } })).body,
+    ).toEqual(first.body);
+    await gql(verifyEmail, { token: rawToken() });
+    expect((await gql(resend, variables)).body).toEqual(first.body);
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(2);
+  });
+  it('forgot is neutral, cooldown applies and reset replaces password without verifying email', async () => {
+    await gql(register, { input });
+    const missing = await gql(forgot, {
+      input: { email: 'missing@example.com' },
+    });
+    expect(mail.sendPasswordResetEmail).not.toHaveBeenCalled();
+    expect((await gql(forgot, { input: { email: input.email } })).body).toEqual(
+      missing.body,
+    );
+    const original = rawToken(true);
+    await gql(forgot, { input: { email: input.email } });
+    expect(mail.sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+    const resetToken = tokens.find((item) => item.type === 'PASSWORD_RESET')!;
+    expect(resetToken.tokenHash).toBe(digest(original));
+    expect(resetToken.expiresAt.getTime() - Date.now()).toBeGreaterThan(
+      59 * 60000,
+    );
+    resetToken.createdAt = new Date(Date.now() - 61000);
+    await gql(forgot, { input: { email: input.email } });
+    expect(
+      (
+        await gql(reset, {
+          input: { token: original, newPassword: 'new-password' },
+        })
+      ).body.errors[0].extensions.code,
+    ).toBe('PASSWORD_RESET_TOKEN_INVALID');
+    const token = rawToken(true);
+    expect(
+      (await gql(reset, { input: { token, newPassword: ' new-password ' } }))
+        .body.data.resetPassword,
+    ).toBe(true);
+    expect(stored!.passwordHash).toMatch(/^\$argon2id\$/);
+    expect(await verify(stored!.passwordHash, ' new-password ')).toBe(true);
+    expect(await verify(stored!.passwordHash, input.password)).toBe(false);
+    expect(stored!.emailVerifiedAt).toBeNull();
+    expect(
+      tokens.filter((item) => item.type === 'PASSWORD_RESET'),
+    ).toHaveLength(0);
+    expect(
+      (await gql(reset, { input: { token, newPassword: 'new-password' } })).body
+        .errors[0].extensions.code,
+    ).toBe('PASSWORD_RESET_TOKEN_INVALID');
+    await gql(verifyEmail, { token: rawToken() });
+    expect(
+      (
+        await gql(login, {
+          input: { email: input.email, password: ' new-password ' },
+        })
+      ).body.data.login.accessToken,
+    ).toEqual(expect.any(String));
+    expect(
+      (
+        await gql(login, {
+          input: { email: input.email, password: input.password },
+        })
+      ).body.errors[0].extensions.code,
+    ).toBe('INVALID_CREDENTIALS');
+  });
+  it('rejects expired reset token and invalid passwords without consuming it', async () => {
+    await gql(register, { input });
+    await gql(forgot, { input: { email: input.email } });
+    const token = rawToken(true);
+    expect(
+      (await gql(reset, { input: { token, newPassword: 'short' } })).body
+        .errors[0].extensions.code,
+    ).toBe('VALIDATION_ERROR');
+    tokens.find((item) => item.type === 'PASSWORD_RESET')!.expiresAt = new Date(
+      Date.now() - 1,
+    );
+    expect(
+      (await gql(reset, { input: { token, newPassword: 'new-password' } })).body
+        .errors[0].extensions.code,
+    ).toBe('PASSWORD_RESET_TOKEN_INVALID');
+    expect(await verify(stored!.passwordHash, input.password)).toBe(true);
+  });
+  it('rejects client-controlled verification status and token type', async () => {
+    expect(
+      (
+        await gql(register, {
+          input: { ...input, emailVerifiedAt: new Date().toISOString() },
+        })
+      ).body.errors[0].extensions.code,
+    ).toBe('VALIDATION_ERROR');
+    expect(
+      (
+        await gql(forgot, {
+          input: { email: input.email, type: 'EMAIL_VERIFICATION' },
+        })
+      ).body.errors[0].extensions.code,
+    ).toBe('VALIDATION_ERROR');
+  });
+  it('keeps recovery neutral on provider failure and permits a later retry', async () => {
+    await gql(register, { input });
+    mail.sendPasswordResetEmail.mockRejectedValueOnce(
+      new Error('Provider detail'),
+    );
+    const failure = await gql(forgot, { input: { email: input.email } });
+    expect(failure.body.data.forgotPassword).toBe(true);
+    expect(
+      tokens.filter((item) => item.type === 'PASSWORD_RESET'),
+    ).toHaveLength(0);
+    await gql(forgot, { input: { email: input.email } });
+    expect(
+      tokens.filter((item) => item.type === 'PASSWORD_RESET'),
+    ).toHaveLength(1);
+  });
+  it('validates every frontend operation against the real resolver schema', async () => {
+    const operations = readFileSync(
+      new URL(
+        '../../motory-fe/src/features/auth/api/operations.ts',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const documents = [...operations.matchAll(/gql`([\s\S]*?)`/g)];
+    expect(documents).toHaveLength(7);
+    const schema = buildClientSchema(
+      (await gql(getIntrospectionQuery())).body.data,
+    );
+    for (const [, document] of documents)
+      expect(validate(schema, parse(document))).toEqual([]);
+  });
+  it('rolls back verification if token deletion fails', async () => {
+    await gql(register, { input });
+    prisma.actionToken.delete.mockRejectedValueOnce(
+      new Error('Delete failure'),
+    );
+    const token = rawToken();
+    expect(
+      (await gql(verifyEmail, { token })).body.errors[0].extensions.code,
+    ).toBe('INTERNAL_SERVER_ERROR');
+    expect(stored!.emailVerifiedAt).toBeNull();
+    expect(tokens).toHaveLength(1);
+    expect((await gql(verifyEmail, { token })).body.data.verifyEmail).toBe(
+      true,
+    );
   });
 });

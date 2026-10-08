@@ -1,5 +1,6 @@
 import { BadGatewayException, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { actionEmail } from './templates/action-email.js';
 import { Resend } from 'resend';
 
 export interface SendEmailOptions {
@@ -26,6 +27,33 @@ export class MailService {
     this.resend = new Resend(apiKey);
   }
 
+  sendVerificationEmail(to: string, url: string, minutes: number) {
+    return this.sendEmail({
+      to,
+      subject: 'Conferma il tuo indirizzo email — Motory',
+      html: actionEmail(
+        'Conferma il tuo indirizzo email',
+        'Per completare la registrazione a Motory, conferma il tuo indirizzo email.',
+        'Verifica email',
+        url,
+        minutes,
+      ),
+    });
+  }
+  sendPasswordResetEmail(to: string, url: string, minutes: number) {
+    return this.sendEmail({
+      to,
+      subject: 'Reimposta la password — Motory',
+      html: actionEmail(
+        'Reimposta la password',
+        'Hai richiesto di modificare la password del tuo account Motory.',
+        'Reimposta password',
+        url,
+        minutes,
+        true,
+      ),
+    });
+  }
   async sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
     try {
       const { data, error } = await this.resend.emails.send({

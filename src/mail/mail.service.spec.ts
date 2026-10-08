@@ -73,4 +73,32 @@ describe('MailService', () => {
     });
     expect(() => new MailService(config)).toThrow('Missing configuration');
   });
+  it('renders Motory verification email with configured URL and dynamic TTL', async () => {
+    send.mockResolvedValue({ data: { id: 'email-id' }, error: null });
+    await service.sendVerificationEmail(
+      'alice@example.com',
+      'https://motory.example/verify-email?token=abc&other=1',
+      1440,
+    );
+    const options = send.mock.calls[0][0] as { html: string };
+    expect(options.html).toContain('Conferma il tuo indirizzo email');
+    expect(options.html).toContain('24 ore');
+    expect(options.html).toContain(
+      'https://motory.example/verify-email?token=abc&amp;other=1',
+    );
+    expect(options.html).not.toContain('<img');
+    expect(options.html).not.toContain('localhost');
+  });
+  it('renders password reset with TTL in minutes and ignore notice', async () => {
+    send.mockResolvedValue({ data: { id: 'email-id' }, error: null });
+    await service.sendPasswordResetEmail(
+      'alice@example.com',
+      'https://motory.example/reset-password?token=abc',
+      60,
+    );
+    const options = send.mock.calls[0][0] as { html: string };
+    expect(options.html).toContain('60 minuti');
+    expect(options.html).toContain('puoi ignorare questa email');
+    expect(options.html).toContain('Reimposta password');
+  });
 });
