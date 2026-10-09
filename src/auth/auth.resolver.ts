@@ -7,6 +7,8 @@ import {
   LoginInput,
   RegisterInput,
 } from './dto/auth.input.js';
+import { RegisterPayload } from './models/register-payload.model.js';
+import { AuthWarningsPayload } from './models/auth-warning.model.js';
 import { AuthPayload } from './models/auth-payload.model.js';
 import { User } from '../users/models/user.model.js';
 import { GqlAuthGuard } from './guards/gql-auth.guard.js';
@@ -17,7 +19,7 @@ import { authValidationPipe } from '../common/graphql-errors.js';
 @UsePipes(authValidationPipe())
 export class AuthResolver {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
-  @Mutation(() => User)
+  @Mutation(() => RegisterPayload)
   register(@Args('input', { type: () => RegisterInput }) input: RegisterInput) {
     return this.auth.register(input);
   }
@@ -29,7 +31,7 @@ export class AuthResolver {
   verifyEmail(@Args('token', { type: () => String }) token: string) {
     return this.auth.verifyEmail(token);
   }
-  @Mutation(() => Boolean)
+  @Mutation(() => AuthWarningsPayload)
   resendVerificationEmail(
     @Args('input', { type: () => EmailInput }) input: EmailInput,
   ) {

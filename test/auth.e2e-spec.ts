@@ -6,7 +6,11 @@ import {
   validate,
 } from 'graphql';
 import { Test } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
+import {
+  BadGatewayException,
+  Logger,
+  type INestApplication,
+} from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo';
 import { GraphQLModule } from '@nestjs/graphql';
@@ -47,7 +51,7 @@ describe('Authentication GraphQL', () => {
   const verifyEmail =
     'mutation($token: String!) { verifyEmail(token: $token) }';
   const resend =
-    'mutation($input: EmailInput!) { resendVerificationEmail(input: $input) }';
+    'mutation($input: EmailInput!) { resendVerificationEmail(input: $input) { warnings { code } } }';
   const forgot =
     'mutation($input: EmailInput!) { forgotPassword(input: $input) }';
   const reset =
@@ -56,9 +60,9 @@ describe('Authentication GraphQL', () => {
   const secret = 'test-only-secret-with-at-least-32-characters';
   const fields = 'id email firstName lastName role createdAt updatedAt';
   const register =
-    'mutation($input: RegisterInput!) { register(input: $input) { ' +
+    'mutation($input: RegisterInput!) { register(input: $input) { user { ' +
     fields +
-    ' } }';
+    ' } warnings { code } } }';
   const login =
     'mutation($input: LoginInput!) { login(input: $input) { accessToken user { ' +
     fields +
@@ -217,13 +221,13 @@ describe('Authentication GraphQL', () => {
     expect(sign).not.toHaveBeenCalled();
     sign.mockRestore();
     expect(registered.body.errors).toBeUndefined();
-    expect(registered.body.data.register).toMatchObject({
+    expect(registered.body.data.register.user).toMatchObject({
       email: 'alice@example.com',
       firstName: 'Alice',
       role: 'USER',
     });
-    expect(registered.body.data.register.accessToken).toBeUndefined();
-    expect(registered.body.data.register.passwordHash).toBeUndefined();
+    expect(registered.body.data.register.user.accessToken).toBeUndefined();
+    expect(registered.body.data.register.user.passwordHash).toBeUndefined();
     expect(stored?.roleId).toBe(roles.find((role) => role.name === 'USER')!.id);
     expect(prisma.role.findUnique).toHaveBeenCalledWith({
       where: { name: 'USER' },
@@ -620,5 +624,89 @@ describe('Authentication GraphQL', () => {
     expect((await gql(verifyEmail, { token })).body.data.verifyEmail).toBe(
       true,
     );
+  });
+  it('returns registration success with a warning and preserves user and token on mail failure', async () => {
+    const log = vi.spyOn(Logger.prototype, 'warn');
+    const cause = {
+      statusCode: 403,
+      name: 'validation_error',
+      message: 'Private provider message',
+    };
+    mail.sendVerificationEmail.mockRejectedValueOnce(
+      new BadGatewayException('Unable to send email', { cause }),
+    );
+    const result = await gql(register, { input });
+    expect(result.body.errors).toBeUndefined();
+    expect(result.body.data.register.user.email).toBe('alice@example.com');
+    expect(result.body.data.register.warnings).toEqual([
+      { code: 'VERIFICATION_EMAIL_SEND_FAILED' },
+    ]);
+    expect(log).toHaveBeenCalledWith({
+      event: 'AUTH_EMAIL_SEND_FAILED',
+      type: 'EMAIL_VERIFICATION',
+      cause,
+    });
+    log.mockRestore();
+    expect(stored!.emailVerifiedAt).toBeNull();
+    expect(tokens).toHaveLength(1);
+    expect(prisma.actionToken.deleteMany).toHaveBeenCalledTimes(1); // Replacement before creation only.
+    expect(JSON.stringify(result.body)).not.toMatch(
+      /Resend|403|validation_error|private provider message/,
+    );
+    const before = tokens[0].id;
+    await gql(resend, { input: { email: input.email } });
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(1);
+    expect(tokens[0].id).toBe(before);
+    tokens[0].createdAt = new Date(Date.now() - 60000);
+    expect(
+      (await gql(resend, { input: { email: input.email } })).body.data
+        .resendVerificationEmail.warnings,
+    ).toEqual([]);
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(2);
+  });
+  it('returns no warnings when registration mail succeeds', async () => {
+    const result = await gql(register, { input });
+    expect(result.body.errors).toBeUndefined();
+    expect(result.body.data.register.warnings).toEqual([]);
+    expect(stored).not.toBeNull();
+    expect(tokens).toHaveLength(1);
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, true])(
+    'keeps duplicate registration identical for verified=%s',
+    async (verified) => {
+      await gql(register, { input });
+      if (verified) stored!.emailVerifiedAt = new Date();
+      const result = await gql(register, { input });
+      expect(result.body.errors[0].extensions.code).toBe(
+        'EMAIL_ALREADY_EXISTS',
+      );
+      expect(prisma.user.create).toHaveBeenCalledTimes(1);
+      expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('preserves resend token and cooldown on delivery failure without exposing provider details', async () => {
+    await gql(register, { input });
+    tokens[0].createdAt = new Date(Date.now() - 60000);
+    const oldId = tokens[0].id;
+    mail.sendVerificationEmail.mockRejectedValueOnce(
+      new Error('Private provider failure'),
+    );
+    const result = await gql(resend, { input: { email: input.email } });
+    expect(result.body.errors).toBeUndefined();
+    expect(result.body.data.resendVerificationEmail.warnings).toEqual([
+      { code: 'VERIFICATION_EMAIL_SEND_FAILED' },
+    ]);
+    expect(JSON.stringify(result.body)).not.toContain(
+      'Private provider failure',
+    );
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].id).not.toBe(oldId);
+    const newId = tokens[0].id;
+    await gql(resend, { input: { email: input.email } });
+    await gql(resend, { input: { email: input.email } });
+    expect(tokens[0].id).toBe(newId);
+    expect(mail.sendVerificationEmail).toHaveBeenCalledTimes(2);
+    expect(stored!.emailVerifiedAt).toBeNull();
   });
 });

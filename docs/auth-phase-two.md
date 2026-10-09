@@ -26,6 +26,8 @@ Creati:
 - `prisma/migrations/20261006190000_auth_phase_two/migration.sql`
 - `src/mail/templates/action-email.ts`
 - `docs/auth-phase-two.md`
+- `src/auth/models/register-payload.model.ts` (aggiornamento 9 ottobre)
+- `src/auth/models/auth-warning.model.ts` (aggiornamento 9 ottobre)
 
 Prisma Client rigenerato in `src/generated/prisma`, directory già esclusa da Git.
 UsersService, seed, JWT strategy e tabella Role conservano il contratto esistente.
@@ -116,12 +118,25 @@ Il file `.env` locale non è modificato. Il frontend continua a usare VITE_GRAPH
 
 ```graphql
 type Mutation {
-  register(input: RegisterInput!): User!
+  register(input: RegisterInput!): RegisterPayload!
   login(input: LoginInput!): AuthPayload!
   verifyEmail(token: String!): Boolean!
-  resendVerificationEmail(input: EmailInput!): Boolean!
+  resendVerificationEmail(input: EmailInput!): AuthWarningsPayload!
   forgotPassword(input: EmailInput!): Boolean!
   resetPassword(input: ResetPasswordInput!): Boolean!
+}
+
+type RegisterPayload {
+  user: User!
+  warnings: [AuthWarning!]!
+}
+
+type AuthWarning {
+  code: String!
+}
+
+type AuthWarningsPayload {
+  warnings: [AuthWarning!]!
 }
 
 input EmailInput {
@@ -176,12 +191,23 @@ il vincolo anche a livello database. Il nuovo token sostituisce il precedente de
 stesso tipo, senza alterare il token dell'altro tipo.
 
 Cooldown 60 secondi, calcolato con createdAt, sia per reinvio verifica sia per recupero.
-Email assente o già verificata e cooldown producono la stessa risposta pubblica true.
-Gli errori del provider nei recuperi mantengono la risposta neutra; il token fallito è
-eliminato tramite tokenHash per consentire un tentativo successivo e senza eliminare
-un'eventuale sostituzione concorrente. Un errore provider nella registrazione è invece
-INTERNAL_SERVER_ERROR: l'account già creato può recuperare la verifica attraverso login
-con credenziali corrette e il pulsante Reinvia email.
+Email assente o già verificata e cooldown producono lo stesso risultato neutro: per
+resend `{ warnings: [] }`; per forgot password `true`.
+
+Dal 9 ottobre 2026 register restituisce `{ user, warnings }`: un fallimento della mail
+successivo alla creazione non annulla la registrazione e non elimina il token.
+Il warning è `{ code: "VERIFICATION_EMAIL_SEND_FAILED" }`, mai un GraphQL error.
+Resend usa lo stesso warning in AuthWarningsPayload e conserva il token anche su
+fallimento, preservando createdAt per il cooldown reale. I dettagli della causa vengono
+registrati tramite Logger NestJS, mai nel contratto pubblico.
+Forgot password conserva il proprio comportamento neutro e consente un successivo
+retry dopo errore provider, eliminando solo il token PASSWORD_RESET dell'invio fallito.
+
+La schermata Controlla la tua email compare sempre dopo register success. In caso di
+warning mostra Account creato correttamente e un messaggio informativo non rosso.
+Reinvia email è sempre presente; countdown 60 secondi dopo registrazione e dopo una
+risposta applicativa di reinvio, anche con warning. Il countdown usa una scadenza assoluta,
+aggiornata ogni secondo, senza introdurre sicurezza o persistenza frontend aggiuntiva.
 
 I token sono eliminati dopo consumo, sostituzione o cancellazione utente (cascade).
 Quelli scaduti non sono utilizzabili; non è introdotto un job di cleanup in questa fase.
@@ -205,7 +231,7 @@ soltanto wrapper password, azioni e link con stile button.
 
 ## Verifiche
 
-Backend: build e lint superati; 11 test unitari, 25 HTTP/GraphQL superati.
+Backend: build e lint superati; 11 test unitari, 30 HTTP/GraphQL superati.
 Test reali dei resolver, DTO, formatter, Argon2id e JWT; Prisma e Resend simulati.
 Copertura: registrazione, login bloccato/verificato, hash token, URL e TTL, verifica
 valida/invalida/scaduta, token errato per tipo, consumo singolo, reinvio e sostituzione,
@@ -213,7 +239,7 @@ risposte neutre, provider failure, reset e login con nuova password, verifica in
 input privati rifiutati, rollback e contratto Apollo validato tramite introspection.
 Schema Prisma validato e Client generato.
 
-Frontend: build e lint superati; 7 test Node e 7 test browser Playwright superati.
+Frontend: build e lint superati; 7 test Node e 12 test browser Playwright superati.
 Browser: registrazione/check email, verifica riuscita e non valida, login non verificato,
 reinvio, forgot neutro, reset con conferma, login nuova password, link mancanti,
 toggle di tutti i campi password senza submit e responsive a 320 px.

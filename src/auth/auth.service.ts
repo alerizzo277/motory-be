@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ActionTokenType } from '../generated/prisma/client.js';
 import { MailService } from '../mail/mail.service.js';
-import { Inject, Injectable } from '@nestjs/common';
+import {
+  AuthWarning,
+  VERIFICATION_EMAIL_SEND_FAILED,
+} from './models/auth-warning.model.js';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { argon2id, hash, verify } from 'argon2';
 import { UsersService, publicUser } from '../users/users.service.js';
@@ -11,6 +15,7 @@ import { applicationError } from '../common/graphql-errors.js';
 import type { LoginInput, RegisterInput } from './dto/auth.input.js';
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   constructor(
     @Inject(UsersService) private readonly users: UsersService,
     @Inject(JwtService) private readonly jwt: JwtService,
@@ -42,13 +47,13 @@ export class AuthService {
       lastName: input.lastName,
       passwordHash,
     });
-    await this.issueToken(
+    const warnings = await this.issueToken(
       user.id,
       user.email,
       ActionTokenType.EMAIL_VERIFICATION,
       false,
     );
-    return publicUser(user);
+    return { user: publicUser(user), warnings };
   }
   async login(input: LoginInput) {
     const user = await this.users.findByEmail(input.email);
@@ -95,7 +100,7 @@ export class AuthService {
     email: string,
     type: ActionTokenType,
     cooldown = true,
-  ) {
+  ): Promise<AuthWarning[]> {
     const minutes = this.ttl(type);
     const token = randomBytes(32).toString('base64url');
     const issued = await this.prisma.$transaction(async (tx) => {
@@ -127,7 +132,7 @@ export class AuthService {
       });
       return true;
     });
-    if (!issued) return;
+    if (!issued) return [];
     const base = new URL(this.config.getOrThrow<string>('FRONTEND_URL'));
     if (!['http:', 'https:'].includes(base.protocol))
       throw new Error('Invalid FRONTEND_URL');
@@ -143,28 +148,38 @@ export class AuthService {
         await this.mail.sendVerificationEmail(email, url.toString(), minutes);
       else
         await this.mail.sendPasswordResetEmail(email, url.toString(), minutes);
-    } catch {
-      // Allow retry after delivery failure without deleting a concurrent replacement.
+    } catch (error: unknown) {
+      const cause = error instanceof Error ? (error.cause ?? error) : error;
+      this.logger.warn({
+        event: 'AUTH_EMAIL_SEND_FAILED',
+        type,
+        cause:
+          cause instanceof Error
+            ? { name: cause.name, message: cause.message, stack: cause.stack }
+            : cause,
+      });
+      if (type === ActionTokenType.EMAIL_VERIFICATION) {
+        // Preserve the token and its createdAt cooldown after delivery failure.
+        return [{ code: VERIFICATION_EMAIL_SEND_FAILED }];
+      }
+      // Keep the existing password recovery behavior independent of verification.
       await this.prisma.actionToken.deleteMany({
         where: { tokenHash: this.tokenHash(token) },
       });
-      // Public recovery operations retain their neutral response even on mail failure.
-      if (!cooldown)
-        throw applicationError(
-          'INTERNAL_SERVER_ERROR',
-          'Unable to send verification email.',
-        );
     }
+    return [];
   }
   async resendVerificationEmail(email: string) {
     const user = await this.users.findByEmail(email);
-    if (user && !user.emailVerifiedAt)
-      await this.issueToken(
-        user.id,
-        user.email,
-        ActionTokenType.EMAIL_VERIFICATION,
-      );
-    return true;
+    const warnings =
+      user && !user.emailVerifiedAt
+        ? await this.issueToken(
+            user.id,
+            user.email,
+            ActionTokenType.EMAIL_VERIFICATION,
+          )
+        : [];
+    return { warnings };
   }
   async forgotPassword(email: string) {
     const user = await this.users.findByEmail(email);
