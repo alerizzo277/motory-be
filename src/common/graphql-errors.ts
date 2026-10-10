@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'EMAIL_ALREADY_EXISTS'
   | 'INVALID_CREDENTIALS'
   | 'UNAUTHENTICATED'
+  | 'VEHICLE_NOT_FOUND'
   | 'USER_NOT_FOUND'
   | 'VALIDATION_ERROR'
   | 'INTERNAL_SERVER_ERROR';
@@ -41,6 +42,7 @@ const publicCodes = new Set([
   'INVALID_CREDENTIALS',
   'UNAUTHENTICATED',
   'USER_NOT_FOUND',
+  'VEHICLE_NOT_FOUND',
   'VALIDATION_ERROR',
 ]);
 export function formatGraphqlError(

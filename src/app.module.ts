@@ -1,3 +1,4 @@
+import { VehiclesModule } from './vehicles/vehicles.module.js';
 import { APP_FILTER } from '@nestjs/core';
 import { GraphqlExceptionFilter } from './common/graphql-exception.filter.js';
 import { Module } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { formatGraphqlError } from './common/graphql-errors.js';
     PrismaModule,
     MailModule,
     AuthModule,
+    VehiclesModule,
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
       autoSchemaFile: true,
