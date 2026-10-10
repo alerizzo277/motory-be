@@ -1,12 +1,7 @@
 import { Inject, UseGuards, UsePipes } from '@nestjs/common';
 import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { AuthService } from './auth.service.js';
-import {
-  EmailInput,
-  ResetPasswordInput,
-  LoginInput,
-  RegisterInput,
-} from './dto/auth.input.js';
+import { EmailInput, ResetPasswordInput, LoginInput, RegisterInput } from './dto/auth.input.js';
 import { RegisterPayload } from './models/register-payload.model.js';
 import { AuthWarningsPayload } from './models/auth-warning.model.js';
 import { AuthPayload } from './models/auth-payload.model.js';
@@ -32,9 +27,7 @@ export class AuthResolver {
     return this.auth.verifyEmail(token);
   }
   @Mutation(() => AuthWarningsPayload)
-  resendVerificationEmail(
-    @Args('input', { type: () => EmailInput }) input: EmailInput,
-  ) {
+  resendVerificationEmail(@Args('input', { type: () => EmailInput }) input: EmailInput) {
     return this.auth.resendVerificationEmail(input.email);
   }
   @Mutation(() => Boolean)

@@ -3,8 +3,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { applicationError } from '../common/graphql-errors.js';
 
-export const normalizeEmail = (email: string): string =>
-  email.trim().toLowerCase();
+export const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 export type UserWithRole = Prisma.UserGetPayload<{ include: { role: true } }>;
 export function publicUser({
   passwordHash: _passwordHash,
@@ -29,20 +28,12 @@ export class UsersService {
       include: { role: true },
     });
   }
-  async create(data: {
-    email: string;
-    passwordHash: string;
-    firstName: string;
-    lastName: string;
-  }) {
+  async create(data: { email: string; passwordHash: string; firstName: string; lastName: string }) {
     const userRole = await this.prisma.role.findUnique({
       where: { name: 'USER' },
     });
     if (!userRole) {
-      throw applicationError(
-        'INTERNAL_SERVER_ERROR',
-        'Registration is temporarily unavailable.',
-      );
+      throw applicationError('INTERNAL_SERVER_ERROR', 'Registration is temporarily unavailable.');
     }
     try {
       return await this.prisma.user.create({
@@ -56,10 +47,7 @@ export class UsersService {
         include: { role: true },
       });
     } catch (error: unknown) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         throw applicationError(
           'EMAIL_ALREADY_EXISTS',
           'An account with this email already exists.',

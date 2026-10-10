@@ -22,13 +22,8 @@ import { GqlAuthGuard } from './guards/gql-auth.guard.js';
         const duration = config.getOrThrow<string>('JWT_EXPIRES_IN');
         if (secret.trim().length < 32)
           throw new Error('JWT_SECRET must contain at least 32 characters');
-        if (
-          !/^[1-9]\d*$/.test(duration) ||
-          !Number.isSafeInteger(Number(duration))
-        ) {
-          throw new Error(
-            'JWT_EXPIRES_IN must be a positive integer in seconds',
-          );
+        if (!/^[1-9]\d*$/.test(duration) || !Number.isSafeInteger(Number(duration))) {
+          throw new Error('JWT_EXPIRES_IN must be a positive integer in seconds');
         }
         return {
           secret,

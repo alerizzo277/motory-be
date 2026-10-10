@@ -11,10 +11,7 @@ export type ErrorCode =
   | 'USER_NOT_FOUND'
   | 'VALIDATION_ERROR'
   | 'INTERNAL_SERVER_ERROR';
-export function applicationError(
-  code: ErrorCode,
-  message: string,
-): GraphQLError {
+export function applicationError(code: ErrorCode, message: string): GraphQLError {
   return new GraphQLError(message, { extensions: { code } });
 }
 export function authValidationPipe(): ValidationPipe {
@@ -45,13 +42,9 @@ const publicCodes = new Set([
   'USER_NOT_FOUND',
   'VALIDATION_ERROR',
 ]);
-export function formatGraphqlError(
-  error: GraphQLFormattedError,
-): GraphQLFormattedError {
+export function formatGraphqlError(error: GraphQLFormattedError): GraphQLFormattedError {
   const code =
-    typeof error.extensions?.code === 'string'
-      ? error.extensions.code
-      : 'INTERNAL_SERVER_ERROR';
+    typeof error.extensions?.code === 'string' ? error.extensions.code : 'INTERNAL_SERVER_ERROR';
   if (publicCodes.has(code)) {
     return {
       message: error.message,
@@ -65,13 +58,7 @@ export function formatGraphqlError(
       },
     };
   }
-  if (
-    [
-      'GRAPHQL_PARSE_FAILED',
-      'GRAPHQL_VALIDATION_FAILED',
-      'BAD_USER_INPUT',
-    ].includes(code)
-  ) {
+  if (['GRAPHQL_PARSE_FAILED', 'GRAPHQL_VALIDATION_FAILED', 'BAD_USER_INPUT'].includes(code)) {
     return {
       message: 'Invalid GraphQL request.',
       extensions: { code: 'VALIDATION_ERROR' },

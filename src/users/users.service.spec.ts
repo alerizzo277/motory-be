@@ -6,9 +6,7 @@ describe('UsersService registration races', () => {
   it('maps the database uniqueness error when concurrent registrations bypass the precheck', async () => {
     const prisma = {
       role: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue({ id: 'user-role-id', name: 'USER' }),
+        findUnique: vi.fn().mockResolvedValue({ id: 'user-role-id', name: 'USER' }),
       },
       user: {
         create: vi.fn().mockRejectedValue(
@@ -45,9 +43,7 @@ describe('UsersService registration races', () => {
   it('normalizes persistence data and ignores fields outside the creation contract', async () => {
     const prisma = {
       role: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue({ id: 'user-role-id', name: 'USER' }),
+        findUnique: vi.fn().mockResolvedValue({ id: 'user-role-id', name: 'USER' }),
       },
       user: { create: vi.fn().mockResolvedValue({}) },
     };

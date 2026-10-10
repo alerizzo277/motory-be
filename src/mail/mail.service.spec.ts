@@ -49,21 +49,14 @@ describe('MailService', () => {
   it.each([
     { data: null, error: { message: 'Rejected', name: 'validation_error' } },
     { data: null, error: null },
-  ])(
-    'converts unsuccessful provider responses into Nest exceptions',
-    async (response) => {
-      send.mockResolvedValue(response);
-      await expect(service.sendEmail(options)).rejects.toBeInstanceOf(
-        BadGatewayException,
-      );
-    },
-  );
+  ])('converts unsuccessful provider responses into Nest exceptions', async (response) => {
+    send.mockResolvedValue(response);
+    await expect(service.sendEmail(options)).rejects.toBeInstanceOf(BadGatewayException);
+  });
 
   it('converts network failures into Nest exceptions', async () => {
     send.mockRejectedValue(new Error('Network unavailable'));
-    await expect(service.sendEmail(options)).rejects.toBeInstanceOf(
-      BadGatewayException,
-    );
+    await expect(service.sendEmail(options)).rejects.toBeInstanceOf(BadGatewayException);
   });
 
   it('fails on missing configuration', () => {
@@ -83,9 +76,7 @@ describe('MailService', () => {
     const options = send.mock.calls[0][0] as { html: string };
     expect(options.html).toContain('Conferma il tuo indirizzo email');
     expect(options.html).toContain('24 ore');
-    expect(options.html).toContain(
-      'https://motory.example/verify-email?token=abc&amp;other=1',
-    );
+    expect(options.html).toContain('https://motory.example/verify-email?token=abc&amp;other=1');
     expect(options.html).not.toContain('<img');
     expect(options.html).not.toContain('localhost');
   });

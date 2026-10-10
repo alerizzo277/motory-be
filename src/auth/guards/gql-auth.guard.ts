@@ -9,8 +9,7 @@ export class GqlAuthGuard extends AuthGuard('jwt') {
     return GqlExecutionContext.create(context).getContext<AuthContext>().req;
   }
   handleRequest<TUser>(error: unknown, user: TUser): TUser {
-    if (error || !user)
-      throw applicationError('UNAUTHENTICATED', 'Authentication required.');
+    if (error || !user) throw applicationError('UNAUTHENTICATED', 'Authentication required.');
     return user;
   }
 }

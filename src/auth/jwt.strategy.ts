@@ -15,11 +15,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       ignoreExpiration: false,
     });
   }
-  validate(payload: {
-    sub?: unknown;
-    role?: unknown;
-    exp?: unknown;
-  }): AuthenticatedUser {
+  validate(payload: { sub?: unknown; role?: unknown; exp?: unknown }): AuthenticatedUser {
     if (
       typeof payload.sub !== 'string' ||
       !isUUID(payload.sub) ||
