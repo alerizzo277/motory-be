@@ -1,3 +1,4 @@
+import { AdminModule } from './admin/admin.module.js';
 import { MaintenanceModule } from './maintenance/maintenance.module.js';
 import { VehiclesModule } from './vehicles/vehicles.module.js';
 import { APP_FILTER } from '@nestjs/core';
@@ -19,6 +20,7 @@ import { formatGraphqlError } from './common/graphql-errors.js';
     AuthModule,
     VehiclesModule,
     MaintenanceModule,
+    AdminModule,
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
       autoSchemaFile: true,
