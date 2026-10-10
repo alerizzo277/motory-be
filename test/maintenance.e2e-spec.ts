@@ -56,11 +56,16 @@ describe('Maintenance GraphQL', () => {
   let createCount = 0;
   let failRead = false;
   const vehicles = [
-    { id: vehicleId, userId: owner },
-    { id: randomUUID(), userId: other },
+    { id: vehicleId, userId: owner, deletedAt: null as Date | null },
+    { id: randomUUID(), userId: other, deletedAt: null as Date | null },
   ];
-  const owned = (id: string, userId: string) =>
-    vehicles.some((v) => v.id === id && v.userId === userId);
+  const owned = (id: string, userId: string, deletedAt?: Date | null) =>
+    vehicles.some(
+      (v) =>
+        v.id === id &&
+        v.userId === userId &&
+        (deletedAt === undefined || v.deletedAt === deletedAt),
+    );
   const prisma = {
     category: {
       findMany: vi.fn(() =>
@@ -71,8 +76,34 @@ describe('Maintenance GraphQL', () => {
       ),
     },
     vehicle: {
-      findFirst: vi.fn(({ where }: { where: { id: string; userId: string } }) => {
-        if (!owned(where.id, where.userId)) return Promise.resolve(null);
+      update: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; userId: string; deletedAt: null };
+          data: { deletedAt: Date };
+        }) => {
+          const vehicle = vehicles.find(
+            (v) =>
+              v.id === where.id && v.userId === where.userId && v.deletedAt === where.deletedAt,
+          );
+          if (!vehicle)
+            throw new Prisma.PrismaClientKnownRequestError('private', {
+              code: 'P2025',
+              clientVersion: '7',
+            });
+          vehicle.deletedAt = data.deletedAt;
+          return Promise.resolve({
+            brand: 'Ford',
+            model: 'Fiesta',
+            licensePlate: 'AB123CD',
+            user: { email: 'owner@example.com' },
+          });
+        },
+      ),
+      findFirst: vi.fn(({ where }: { where: { id: string; userId: string; deletedAt?: null } }) => {
+        if (!owned(where.id, where.userId, where.deletedAt)) return Promise.resolve(null);
         const readings = rows
           .filter(
             (e) =>
@@ -91,17 +122,27 @@ describe('Maintenance GraphQL', () => {
       }),
     },
     maintenanceEvent: {
-      findFirst: vi.fn(({ where }: { where: { id: string; vehicle: { userId: string } } }) => {
-        if (failRead) throw new Error('private database failure');
-        return Promise.resolve(
-          rows.find((e) => e.id === where.id && owned(e.vehicleId, where.vehicle.userId)) ?? null,
-        );
-      }),
+      findFirst: vi.fn(
+        ({ where }: { where: { id: string; vehicle: { userId: string; deletedAt?: null } } }) => {
+          if (failRead) throw new Error('private database failure');
+          return Promise.resolve(
+            rows.find(
+              (e) =>
+                e.id === where.id &&
+                owned(e.vehicleId, where.vehicle.userId, where.vehicle.deletedAt),
+            ) ?? null,
+          );
+        },
+      ),
       findMany: vi.fn(
         ({
           where,
         }: {
-          where: { vehicleId: string; vehicle: { userId: string }; status: string };
+          where: {
+            vehicleId: string;
+            vehicle: { userId: string; deletedAt?: null };
+            status: string;
+          };
         }) => {
           const dateField = where.status === 'SCHEDULED' ? 'scheduledDate' : 'executionDate';
           const direction = where.status === 'SCHEDULED' ? 1 : -1;
@@ -111,7 +152,7 @@ describe('Maintenance GraphQL', () => {
                 (e) =>
                   e.vehicleId === where.vehicleId &&
                   e.status === where.status &&
-                  owned(e.vehicleId, where.vehicle.userId),
+                  owned(e.vehicleId, where.vehicle.userId, where.vehicle.deletedAt),
               )
               .sort((a, b) => {
                 const x = a[dateField];
@@ -145,31 +186,35 @@ describe('Maintenance GraphQL', () => {
         rows.push(row);
         return Promise.resolve(row);
       }),
-      delete: vi.fn(({ where }: { where: { id: string; vehicle: { userId: string } } }) => {
-        const index = rows.findIndex(
-          (e) => e.id === where.id && owned(e.vehicleId, where.vehicle.userId),
-        );
-        if (index < 0)
-          throw new Prisma.PrismaClientKnownRequestError('private', {
-            code: 'P2025',
-            clientVersion: '7',
-          });
-        const [row] = rows.splice(index, 1);
-        return Promise.resolve(row);
-      }),
+      delete: vi.fn(
+        ({ where }: { where: { id: string; vehicle: { userId: string; deletedAt?: null } } }) => {
+          const index = rows.findIndex(
+            (e) =>
+              e.id === where.id &&
+              owned(e.vehicleId, where.vehicle.userId, where.vehicle.deletedAt),
+          );
+          if (index < 0)
+            throw new Prisma.PrismaClientKnownRequestError('private', {
+              code: 'P2025',
+              clientVersion: '7',
+            });
+          const [row] = rows.splice(index, 1);
+          return Promise.resolve(row);
+        },
+      ),
       update: vi.fn(
         ({
           where,
           data,
         }: {
-          where: { id: string; vehicle: { userId: string }; status: string };
+          where: { id: string; vehicle: { userId: string; deletedAt?: null }; status: string };
           data: Partial<MaintenanceEvent>;
         }) => {
           const row = rows.find(
             (e) =>
               e.id === where.id &&
               e.status === where.status &&
-              owned(e.vehicleId, where.vehicle.userId),
+              owned(e.vehicleId, where.vehicle.userId, where.vehicle.deletedAt),
           );
           if (!row)
             throw new Prisma.PrismaClientKnownRequestError('private', {
@@ -215,6 +260,7 @@ describe('Maintenance GraphQL', () => {
           ignoreEnvFile: true,
           load: [
             () => ({
+              VEHICLE_DELETION_RETENTION_DAYS: '47',
               JWT_SECRET: secret,
               JWT_EXPIRES_IN: '3600',
               FRONTEND_URL: 'https://example.com',
@@ -236,7 +282,7 @@ describe('Maintenance GraphQL', () => {
       .overrideProvider(PrismaService)
       .useValue(prisma)
       .overrideProvider(MailService)
-      .useValue({})
+      .useValue({ sendVehicleDeletionEmail: vi.fn() })
       .compile();
     app = module.createNestApplication();
     app.useLogger(false);
@@ -247,12 +293,79 @@ describe('Maintenance GraphQL', () => {
   });
   beforeEach(() => {
     rows = [];
+    vehicles.forEach((v) => {
+      v.deletedAt = null;
+    });
     failCreateAt = 0;
     createCount = 0;
     failRead = false;
     vi.clearAllMocks();
   });
 
+  it('soft deletion preserves every event but blocks all direct maintenance access and mutation', async () => {
+    const scheduledEvent = await createEvent();
+    const completed = await createEvent({
+      ...executed,
+      odometerKm: 123000,
+      nextScheduledEvent: next,
+    });
+    const before = rows.map((row) => ({ ...row }));
+    const deletion = await gql('mutation($id: ID!) { deleteVehicle(id: $id) }', { id: vehicleId });
+    expect(deletion.body.data.deleteVehicle).toBe(true);
+    expect(vehicles[0].deletedAt).toBeInstanceOf(Date);
+    expect(rows).toEqual(before);
+    const cases: { query: string; variables: Record<string, unknown>; code: string }[] = [
+      { query: list, variables: { vehicleId }, code: 'VEHICLE_NOT_FOUND' },
+      { query: create, variables: { input: scheduled }, code: 'VEHICLE_NOT_FOUND' },
+      {
+        query: create,
+        variables: { input: { ...executed, nextScheduledEvent: next } },
+        code: 'VEHICLE_NOT_FOUND',
+      },
+      { query: mileageQuery, variables: { id: vehicleId }, code: 'VEHICLE_NOT_FOUND' },
+    ];
+    for (const id of [
+      scheduledEvent.event.id,
+      completed.event.id,
+      completed.nextScheduledEvent.id,
+    ]) {
+      cases.push(
+        { query: get, variables: { id }, code: 'MAINTENANCE_EVENT_NOT_FOUND' },
+        { query: remove, variables: { id }, code: 'MAINTENANCE_EVENT_NOT_FOUND' },
+        {
+          query: update,
+          variables: { id, input: { notes: 'changed' } },
+          code: 'MAINTENANCE_EVENT_NOT_FOUND',
+        },
+        {
+          query: update,
+          variables: {
+            id,
+            input: { status: 'EXECUTED', executionDate: '2020-02-01', nextScheduledEvent: next },
+          },
+          code: 'MAINTENANCE_EVENT_NOT_FOUND',
+        },
+      );
+    }
+    for (const testCase of cases) {
+      const result = await gql(testCase.query, testCase.variables);
+      expect(result.body.errors[0].extensions.code).toBe(testCase.code);
+      expect(JSON.stringify(result.body)).not.toMatch(/deletedAt|AB123CD|123000/);
+      expect(rows).toEqual(before);
+    }
+    expect(prisma.maintenanceEvent.delete).not.toHaveBeenCalled();
+    expect(prisma.maintenanceEvent.update).not.toHaveBeenCalled();
+  });
+  it('does not expose nested vehicle relationships on maintenance events', async () => {
+    const { event } = await createEvent();
+    expect(
+      (
+        await gql('query($id: ID!) { maintenanceEvent(id: $id) { vehicle { id } } }', {
+          id: event.id,
+        })
+      ).body.errors[0].extensions.code,
+    ).toBe('VALIDATION_ERROR');
+  });
   it('permanently deletes only the requested event, preserves follow-ups and derives mileage', async () => {
     const older = await createEvent({
       ...executed,

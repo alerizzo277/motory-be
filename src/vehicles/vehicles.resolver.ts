@@ -1,5 +1,5 @@
 import { Inject, UseGuards, UsePipes } from '@nestjs/common';
-import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { GqlAuthGuard } from '../auth/guards/gql-auth.guard.js';
 import type { AuthenticatedUser } from '../auth/auth.types.js';
@@ -19,6 +19,17 @@ export class VehiclesResolver {
   @Query(() => Vehicle)
   vehicle(@CurrentUser() user: AuthenticatedUser, @Args('id', { type: () => ID }) id: string) {
     return this.vehiclesService.get(user.id, id);
+  }
+  @Query(() => Int)
+  vehicleDeletionRetentionDays() {
+    return this.vehiclesService.deletionRetentionDays();
+  }
+  @Mutation(() => Boolean)
+  deleteVehicle(
+    @CurrentUser() user: AuthenticatedUser,
+    @Args('id', { type: () => ID }) id: string,
+  ) {
+    return this.vehiclesService.delete(user.id, id);
   }
   @Mutation(() => Vehicle)
   createVehicle(

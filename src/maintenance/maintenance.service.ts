@@ -61,12 +61,19 @@ export class MaintenanceService {
   }
   private async ownedVehicle(db: Prisma.TransactionClient, userId: string, id: string) {
     checkId(id);
-    if (!(await db.vehicle.findFirst({ where: { id, userId }, select: { id: true } })))
+    if (
+      !(await db.vehicle.findFirst({
+        where: { id, userId, deletedAt: null },
+        select: { id: true },
+      }))
+    )
       throw applicationError('VEHICLE_NOT_FOUND', 'Vehicle not found.');
   }
   private async ownedEvent(db: Prisma.TransactionClient, userId: string, id: string) {
     checkId(id);
-    const event = await db.maintenanceEvent.findFirst({ where: { id, vehicle: { userId } } });
+    const event = await db.maintenanceEvent.findFirst({
+      where: { id, vehicle: { userId, deletedAt: null } },
+    });
     if (!event)
       throw applicationError('MAINTENANCE_EVENT_NOT_FOUND', 'Maintenance event not found.');
     return event;
@@ -75,7 +82,7 @@ export class MaintenanceService {
     await this.ownedVehicle(this.prisma, userId, vehicleId);
     const fetch = (eventStatus: MaintenanceStatus) =>
       this.prisma.maintenanceEvent.findMany({
-        where: { vehicleId, vehicle: { userId }, status: eventStatus },
+        where: { vehicleId, vehicle: { userId, deletedAt: null }, status: eventStatus },
         orderBy:
           eventStatus === 'COMPLETED'
             ? [{ executionDate: { sort: 'desc', nulls: 'last' } }, { id: 'asc' }]
@@ -96,7 +103,9 @@ export class MaintenanceService {
     try {
       await this.ownedEvent(this.prisma, userId, id);
       // Recheck ownership in the write to protect against changes after the read.
-      await this.prisma.maintenanceEvent.delete({ where: { id, vehicle: { userId } } });
+      await this.prisma.maintenanceEvent.delete({
+        where: { id, vehicle: { userId, deletedAt: null } },
+      });
       return true;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
@@ -208,7 +217,7 @@ export class MaintenanceService {
           );
           const next = await this.nextData(tx, merged.status, input.nextScheduledEvent);
           const event = await tx.maintenanceEvent.update({
-            where: { id, vehicle: { userId }, status: previous.status },
+            where: { id, vehicle: { userId, deletedAt: null }, status: previous.status },
             data,
           });
           const nextScheduledEvent = next

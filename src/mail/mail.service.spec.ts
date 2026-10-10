@@ -82,6 +82,28 @@ describe('MailService', () => {
     expect(options.html).not.toContain('<img');
     expect(options.html).not.toContain('localhost');
   });
+  it('renders the vehicle notification with escaped identifiers, configured retention, and future recovery wording', async () => {
+    send.mockResolvedValue({ data: { id: 'email-id' }, error: null });
+    await service.sendVehicleDeletionEmail(
+      'owner@example.com',
+      { brand: '<Ford>', model: 'Fiesta & ST', licensePlate: 'AB"123' },
+      37,
+    );
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'owner@example.com',
+        subject: 'Motory - Veicolo rimosso dal tuo garage',
+      }),
+    );
+    const html = (send.mock.calls[0][0] as { html: string }).html;
+    expect(html).toContain('&lt;Ford&gt; Fiesta &amp; ST (AB&quot;123)');
+    expect(html).toContain('37 giorni');
+    expect(html).toContain('prevista per il futuro');
+    expect(html).toContain('non comporta una cancellazione automatica');
+    expect(html).not.toContain('<Ford>');
+    expect(html).not.toContain('href=');
+    expect(html).toContain('lang="it"');
+  });
   it('renders password reset with TTL in minutes and ignore notice', async () => {
     send.mockResolvedValue({ data: { id: 'email-id' }, error: null });
     await service.sendPasswordResetEmail(

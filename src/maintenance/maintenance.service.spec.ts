@@ -63,10 +63,10 @@ describe('MaintenanceService', () => {
   it('checks ownership and constrains the physical delete to the owner', async () => {
     expect(await service.delete('owner', id)).toBe(true);
     expect(db.maintenanceEvent.findFirst).toHaveBeenCalledWith({
-      where: { id, vehicle: { userId: 'owner' } },
+      where: { id, vehicle: { userId: 'owner', deletedAt: null } },
     });
     expect(db.maintenanceEvent.delete).toHaveBeenCalledWith({
-      where: { id, vehicle: { userId: 'owner' } },
+      where: { id, vehicle: { userId: 'owner', deletedAt: null } },
     });
   });
   it('does not delete inaccessible or invalid events', async () => {
@@ -91,12 +91,12 @@ describe('MaintenanceService', () => {
     db.maintenanceEvent.findMany.mockResolvedValue([]);
     await service.list('owner', vehicleId, status);
     expect(db.vehicle.findFirst).toHaveBeenCalledWith({
-      where: { id: vehicleId, userId: 'owner' },
+      where: { id: vehicleId, userId: 'owner', deletedAt: null },
       select: { id: true },
     });
     expect(db.maintenanceEvent.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { vehicleId, vehicle: { userId: 'owner' }, status },
+        where: { vehicleId, vehicle: { userId: 'owner', deletedAt: null }, status },
         orderBy: expect.arrayContaining([{ id: 'asc' }]),
       }),
     );
@@ -168,7 +168,9 @@ describe('MaintenanceService', () => {
       isolationLevel: 'Serializable',
     });
     expect(db.maintenanceEvent.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id, vehicle: { userId: 'owner' }, status: 'SCHEDULED' } }),
+      expect.objectContaining({
+        where: { id, vehicle: { userId: 'owner', deletedAt: null }, status: 'SCHEDULED' },
+      }),
     );
     expect(db.maintenanceEvent.create).toHaveBeenCalledTimes(1);
   });

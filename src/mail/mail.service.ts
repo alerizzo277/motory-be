@@ -1,5 +1,7 @@
 import { BadGatewayException, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { vehicleDeletionEmail } from './templates/vehicle-deletion-email.js';
+import type { DeletedVehicleInformation } from './templates/vehicle-deletion-email.js';
 import { actionEmail } from './templates/action-email.js';
 import { Resend } from 'resend';
 
@@ -52,6 +54,13 @@ export class MailService {
         minutes,
         true,
       ),
+    });
+  }
+  sendVehicleDeletionEmail(to: string, vehicle: DeletedVehicleInformation, retentionDays: number) {
+    return this.sendEmail({
+      to,
+      subject: 'Motory - Veicolo rimosso dal tuo garage',
+      html: vehicleDeletionEmail(vehicle, retentionDays),
     });
   }
   async sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {

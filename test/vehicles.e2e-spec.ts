@@ -22,6 +22,8 @@ const other = randomUUID();
 const fields = 'id brand model year licensePlate fuelType latestOdometerKm createdAt updatedAt';
 const create = `mutation($input: CreateVehicleInput!) { createVehicle(input: $input) { ${fields} } }`;
 const update = `mutation($id: ID!, $input: UpdateVehicleInput!) { updateVehicle(id: $id, input: $input) { ${fields} } }`;
+const remove = 'mutation DeleteVehicle($id: ID!) { deleteVehicle(id: $id) }';
+const retention = 'query { vehicleDeletionRetentionDays }';
 const get = `query($id: ID!) { vehicle(id: $id) { ${fields} } }`;
 const list = `query { vehicles { ${fields} } }`;
 const input = {
@@ -53,24 +55,58 @@ describe('Vehicles GraphQL', () => {
       )
       .slice(0, 1),
   });
+  const mail = { sendVehicleDeletionEmail: vi.fn() };
   const prisma = {
     vehicle: {
-      create: vi.fn(({ data }: { data: Omit<Vehicle, 'id' | 'createdAt' | 'updatedAt'> }) => {
-        if (fail) throw new Error('private database detail');
-        const row = { ...data, id: randomUUID(), createdAt: new Date(), updatedAt: new Date() };
-        rows.push(row);
-        return Promise.resolve(project(row));
-      }),
-      findMany: vi.fn(({ where }: { where: { userId: string } }) =>
-        Promise.resolve(rows.filter((r) => r.userId === where.userId).map(project)),
+      create: vi.fn(
+        ({ data }: { data: Omit<Vehicle, 'id' | 'createdAt' | 'updatedAt' | 'deletedAt'> }) => {
+          if (fail) throw new Error('private database detail');
+          const row = {
+            ...data,
+            deletedAt: null,
+            id: randomUUID(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          rows.push(row);
+          return Promise.resolve(project(row));
+        },
       ),
-      findFirst: vi.fn(({ where }: { where: { id: string; userId: string } }) => {
-        const row = rows.find((r) => r.id === where.id && r.userId === where.userId);
+      findMany: vi.fn(({ where }: { where: { userId: string; deletedAt?: null } }) =>
+        Promise.resolve(
+          rows
+            .filter(
+              (r) =>
+                r.userId === where.userId &&
+                (where.deletedAt === undefined || r.deletedAt === where.deletedAt),
+            )
+            .map(project),
+        ),
+      ),
+      findFirst: vi.fn(({ where }: { where: { id: string; userId: string; deletedAt?: null } }) => {
+        const row = rows.find(
+          (r) =>
+            r.id === where.id &&
+            r.userId === where.userId &&
+            (where.deletedAt === undefined || r.deletedAt === where.deletedAt),
+        );
         return Promise.resolve(row ? project(row) : null);
       }),
       update: vi.fn(
-        ({ where, data }: { where: { id: string; userId: string }; data: Partial<Vehicle> }) => {
-          const row = rows.find((r) => r.id === where.id && r.userId === where.userId);
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; userId: string; deletedAt?: null };
+          data: Partial<Vehicle>;
+        }) => {
+          if (fail) throw new Error('private database detail');
+          const row = rows.find(
+            (r) =>
+              r.id === where.id &&
+              r.userId === where.userId &&
+              (where.deletedAt === undefined || r.deletedAt === where.deletedAt),
+          );
           if (!row)
             throw new Prisma.PrismaClientKnownRequestError('private', {
               code: 'P2025',
@@ -80,7 +116,16 @@ describe('Vehicles GraphQL', () => {
             row,
             Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)),
           );
-          return Promise.resolve(project(row));
+          return Promise.resolve(
+            data.deletedAt
+              ? {
+                  brand: row.brand,
+                  model: row.model,
+                  licensePlate: row.licensePlate,
+                  user: { email: 'owner@example.com' },
+                }
+              : project(row),
+          );
         },
       ),
     },
@@ -103,6 +148,7 @@ describe('Vehicles GraphQL', () => {
           ignoreEnvFile: true,
           load: [
             () => ({
+              VEHICLE_DELETION_RETENTION_DAYS: '37',
               JWT_SECRET: secret,
               JWT_EXPIRES_IN: '3600',
               FRONTEND_URL: 'https://example.com',
@@ -123,7 +169,7 @@ describe('Vehicles GraphQL', () => {
       .overrideProvider(PrismaService)
       .useValue(prisma)
       .overrideProvider(MailService)
-      .useValue({})
+      .useValue(mail)
       .compile();
     app = module.createNestApplication();
     app.useLogger(false);
@@ -136,6 +182,103 @@ describe('Vehicles GraphQL', () => {
     rows = [];
     events = [];
     fail = false;
+    vi.clearAllMocks();
+    mail.sendVehicleDeletionEmail.mockReset();
+  });
+  it('preserves the vehicle row, conceals it from reads and updates, and sends one notification', async () => {
+    const id = (await gql(create, { input })).body.data.createVehicle.id;
+    const active = (await gql(create, { input })).body.data.createVehicle.id;
+    expect(rows.every((row) => row.deletedAt === null)).toBe(true);
+    const before = { ...rows[0] };
+    const result = await gql(remove, { id });
+    expect(result.body).toMatchObject({ data: { deleteVehicle: true } });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ ...before, deletedAt: expect.any(Date) });
+    expect((await gql(list)).body.data.vehicles.map((v: { id: string }) => v.id)).toEqual([active]);
+    for (const query of [get, update, remove]) {
+      const deleted = await gql(query, { id, input: {} });
+      const missing = await gql(query, { id: randomUUID(), input: {} });
+      expect(deleted.body.errors[0]).toEqual(missing.body.errors[0]);
+      expect(deleted.body.errors[0].extensions.code).toBe('VEHICLE_NOT_FOUND');
+    }
+    expect(mail.sendVehicleDeletionEmail).toHaveBeenCalledTimes(1);
+    expect(mail.sendVehicleDeletionEmail).toHaveBeenCalledWith(
+      'owner@example.com',
+      expect.objectContaining({
+        brand: 'Alfa Romeo',
+        model: 'Golf GTI',
+        licensePlate: 'AB 123-CD',
+      }),
+      37,
+    );
+  });
+  it('enforces ownership and validates deletion IDs without sending mail', async () => {
+    const id = (await gql(create, { input })).body.data.createVehicle.id;
+    const inaccessible = await gql(remove, { id }, other);
+    const missing = await gql(remove, { id: randomUUID() });
+    expect(inaccessible.body.errors[0]).toEqual(missing.body.errors[0]);
+    expect((await gql(remove, { id: 'invalid' })).body.errors[0].extensions.code).toBe(
+      'VALIDATION_ERROR',
+    );
+    expect(rows[0].deletedAt).toBeNull();
+    expect(mail.sendVehicleDeletionEmail).not.toHaveBeenCalled();
+  });
+  it('allows only one simultaneous deletion and one notification', async () => {
+    const id = (await gql(create, { input })).body.data.createVehicle.id;
+    const results = await Promise.all([gql(remove, { id }), gql(remove, { id })]);
+    expect(results.filter((r) => r.body.data?.deleteVehicle === true)).toHaveLength(1);
+    expect(
+      results.filter((r) => r.body.errors?.[0].extensions.code === 'VEHICLE_NOT_FOUND'),
+    ).toHaveLength(1);
+    expect(rows).toHaveLength(1);
+    expect(mail.sendVehicleDeletionEmail).toHaveBeenCalledTimes(1);
+  });
+  it('conceals database failures and never sends mail for failed deletion', async () => {
+    const id = (await gql(create, { input })).body.data.createVehicle.id;
+    fail = true;
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      const result = await gql(remove, { id });
+      expect(result.body.errors[0]).toMatchObject({
+        message: 'An unexpected error occurred.',
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+      expect(JSON.stringify(result.body)).not.toContain('private');
+      expect(rows[0].deletedAt).toBeNull();
+      expect(mail.sendVehicleDeletionEmail).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+  it('keeps deletion successful on email failure without exposing provider data', async () => {
+    const id = (await gql(create, { input })).body.data.createVehicle.id;
+    mail.sendVehicleDeletionEmail.mockRejectedValueOnce(new Error('private provider failure'));
+    const log = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      expect((await gql(remove, { id })).body).toEqual({ data: { deleteVehicle: true } });
+      expect(rows[0].deletedAt).toBeInstanceOf(Date);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private|owner@example|AB 123/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+  it('exposes only configured retention information and no deletion or nested ownership fields', async () => {
+    expect((await gql(retention)).body).toEqual({ data: { vehicleDeletionRetentionDays: 37 } });
+    const schema = buildClientSchema((await gql(getIntrospectionQuery())).body.data);
+    const deletion = schema.getMutationType()!.getFields().deleteVehicle;
+    expect(String(deletion.type)).toBe('Boolean!');
+    expect(deletion.args.map((arg) => [arg.name, String(arg.type)])).toEqual([['id', 'ID!']]);
+    expect(String(schema.getQueryType()!.getFields().vehicleDeletionRetentionDays.type)).toBe(
+      'Int!',
+    );
+    const id = (await gql(create, { input })).body.data.createVehicle.id;
+    for (const field of ['deletedAt', 'user { email }', 'maintenanceEvents { id }']) {
+      expect(
+        (await gql(`query($id: ID!) { vehicle(id: $id) { ${field} } }`, { id })).body.errors[0]
+          .extensions.code,
+      ).toBe('VALIDATION_ERROR');
+    }
   });
   it('creates normalized vehicles with optional fuel and preserves capitalization and separators', async () => {
     const { body } = await gql(create, { input });
@@ -178,10 +321,10 @@ describe('Vehicles GraphQL', () => {
     const result = await gql(getIntrospectionQuery());
     const schema = buildClientSchema(result.body.data);
     expect(Object.keys(schema.getQueryType()!.getFields())).toEqual(
-      expect.arrayContaining(['vehicles', 'vehicle']),
+      expect.arrayContaining(['vehicles', 'vehicle', 'vehicleDeletionRetentionDays']),
     );
     expect(Object.keys(schema.getMutationType()!.getFields())).toEqual(
-      expect.arrayContaining(['createVehicle', 'updateVehicle']),
+      expect.arrayContaining(['createVehicle', 'updateVehicle', 'deleteVehicle']),
     );
     for (const name of ['CreateVehicleInput', 'UpdateVehicleInput']) {
       const type = schema.getType(name);
@@ -249,11 +392,14 @@ describe('Vehicles GraphQL', () => {
       );
     }
   });
-  it.each([create, update, get, list])('requires authentication for %s', async (query) => {
-    expect(
-      (await gql(query, { input, id: randomUUID() }, null)).body.errors[0].extensions.code,
-    ).toBe('UNAUTHENTICATED');
-  });
+  it.each([create, update, get, list, remove, retention])(
+    'requires authentication for %s',
+    async (query) => {
+      expect(
+        (await gql(query, { input, id: randomUUID() }, null)).body.errors[0].extensions.code,
+      ).toBe('UNAUTHENTICATED');
+    },
+  );
   it('returns chronological mileage with deterministic ties and ignores scheduled or incomplete readings', async () => {
     const id = (await gql(create, { input })).body.data.createVehicle.id;
     events = [
