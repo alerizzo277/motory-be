@@ -36,6 +36,13 @@ export class MaintenanceResolver {
   ) {
     return this.service.get(user.id, id);
   }
+  @Mutation(() => Boolean)
+  deleteMaintenanceEvent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Args('id', { type: () => ID }) id: string,
+  ) {
+    return this.service.delete(user.id, id);
+  }
   @Mutation(() => MaintenanceEventPayload)
   createMaintenanceEvent(
     @CurrentUser() user: AuthenticatedUser,

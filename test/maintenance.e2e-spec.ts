@@ -28,6 +28,7 @@ const fields =
   'id vehicleId categoryId name status scheduledDate scheduledOdometerKm executionDate odometerKm cost provider notes createdAt updatedAt';
 const create = `mutation($input: CreateMaintenanceEventInput!) { createMaintenanceEvent(input: $input) { event { ${fields} } nextScheduledEvent { ${fields} } } }`;
 const update = `mutation($id: ID!, $input: UpdateMaintenanceEventInput!) { updateMaintenanceEvent(id: $id, input: $input) { event { ${fields} } nextScheduledEvent { ${fields} } } }`;
+const remove = 'mutation DeleteMaintenanceEvent($id: ID!) { deleteMaintenanceEvent(id: $id) }';
 const get = `query($id: ID!) { maintenanceEvent(id: $id) { ${fields} } }`;
 const list = `query($vehicleId: ID!, $status: MaintenanceEventStatus) { maintenanceEvents(vehicleId: $vehicleId, status: $status) { ${fields} } }`;
 const categoryQuery = 'query { categories { id code } }';
@@ -144,6 +145,18 @@ describe('Maintenance GraphQL', () => {
         rows.push(row);
         return Promise.resolve(row);
       }),
+      delete: vi.fn(({ where }: { where: { id: string; vehicle: { userId: string } } }) => {
+        const index = rows.findIndex(
+          (e) => e.id === where.id && owned(e.vehicleId, where.vehicle.userId),
+        );
+        if (index < 0)
+          throw new Prisma.PrismaClientKnownRequestError('private', {
+            code: 'P2025',
+            clientVersion: '7',
+          });
+        const [row] = rows.splice(index, 1);
+        return Promise.resolve(row);
+      }),
       update: vi.fn(
         ({
           where,
@@ -189,7 +202,7 @@ describe('Maintenance GraphQL', () => {
       );
     return req.send({ query, variables });
   }
-  async function createEvent(input = scheduled) {
+  async function createEvent(input: Record<string, unknown> = scheduled) {
     const result = await gql(create, { input });
     expect(result.body.errors).toBeUndefined();
     return result.body.data.createMaintenanceEvent;
@@ -240,6 +253,78 @@ describe('Maintenance GraphQL', () => {
     vi.clearAllMocks();
   });
 
+  it('permanently deletes only the requested event, preserves follow-ups and derives mileage', async () => {
+    const older = await createEvent({
+      ...executed,
+      executionDate: '2020-01-01',
+      odometerKm: 150000,
+    });
+    const latest = await createEvent({
+      ...executed,
+      executionDate: '2020-06-01',
+      odometerKm: 155000,
+      nextScheduledEvent: next,
+    });
+    const remaining = rows.filter((row) => row.id !== latest.event.id).map((row) => ({ ...row }));
+    expect((await gql(mileageQuery, { id: vehicleId })).body.data.vehicle.latestOdometerKm).toBe(
+      155000,
+    );
+    expect((await gql(remove, { id: latest.event.id })).body.data.deleteMaintenanceEvent).toBe(
+      true,
+    );
+    expect(rows).toEqual(remaining);
+    expect(rows.some((row) => row.id === latest.nextScheduledEvent.id)).toBe(true);
+    expect((await gql(get, { id: latest.event.id })).body.errors[0].extensions.code).toBe(
+      'MAINTENANCE_EVENT_NOT_FOUND',
+    );
+    expect((await gql(mileageQuery, { id: vehicleId })).body.data.vehicle.latestOdometerKm).toBe(
+      150000,
+    );
+    await gql(remove, { id: older.event.id });
+    expect(
+      (await gql(mileageQuery, { id: vehicleId })).body.data.vehicle.latestOdometerKm,
+    ).toBeNull();
+    await gql(remove, { id: latest.nextScheduledEvent.id });
+    expect(rows).toHaveLength(0);
+  });
+  it('rejects unauthenticated, inaccessible, nonexistent and invalid deletion IDs', async () => {
+    const { event } = await createEvent();
+    expect((await gql(remove, { id: event.id }, null)).body.errors[0].extensions.code).toBe(
+      'UNAUTHENTICATED',
+    );
+    const inaccessible = await gql(remove, { id: event.id }, other);
+    const absent = await gql(remove, { id: randomUUID() });
+    expect(inaccessible.body.errors[0]).toEqual(absent.body.errors[0]);
+    expect(absent.body.errors[0].extensions.code).toBe('MAINTENANCE_EVENT_NOT_FOUND');
+    expect((await gql(remove, { id: 'invalid' })).body.errors[0].extensions.code).toBe(
+      'VALIDATION_ERROR',
+    );
+    expect(rows).toHaveLength(1);
+    expect(prisma.maintenanceEvent.delete).not.toHaveBeenCalled();
+  });
+  it.each(['P2025', 'P2003'])(
+    'handles deletion database failure %s without exposing details',
+    async (code) => {
+      const { event } = await createEvent();
+      const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      prisma.maintenanceEvent.delete.mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('private database details', {
+          code,
+          clientVersion: '7',
+        }),
+      );
+      try {
+        const result = await gql(remove, { id: event.id });
+        expect(result.body.errors[0].extensions.code).toBe(
+          code === 'P2025' ? 'MAINTENANCE_EVENT_NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
+        );
+        expect(JSON.stringify(result.body)).not.toContain('private');
+        expect(rows).toHaveLength(1);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
   it('retrieves the six existing category codes in deterministic order', async () => {
     const result = await gql(categoryQuery);
     expect(result.body.errors).toBeUndefined();
@@ -658,8 +743,15 @@ describe('Maintenance GraphQL', () => {
       expect.arrayContaining(['categories', 'maintenanceEvents', 'maintenanceEvent']),
     );
     expect(Object.keys(schema.getMutationType()!.getFields())).toEqual(
-      expect.arrayContaining(['createMaintenanceEvent', 'updateMaintenanceEvent']),
+      expect.arrayContaining([
+        'createMaintenanceEvent',
+        'updateMaintenanceEvent',
+        'deleteMaintenanceEvent',
+      ]),
     );
+    const deletion = schema.getMutationType()!.getFields().deleteMaintenanceEvent;
+    expect(String(deletion.type)).toBe('Boolean!');
+    expect(deletion.args.map((arg) => [arg.name, String(arg.type)])).toEqual([['id', 'ID!']]);
     const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
     try {
       failRead = true;

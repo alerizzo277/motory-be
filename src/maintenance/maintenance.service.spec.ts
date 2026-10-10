@@ -33,7 +33,13 @@ describe('MaintenanceService', () => {
   const db = {
     vehicle: { findFirst: vi.fn() },
     category: { findMany: vi.fn(), findUnique: vi.fn() },
-    maintenanceEvent: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
+    maintenanceEvent: {
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
   };
   const transaction = vi.fn(async (fn: (tx: typeof db) => unknown) => fn(db));
   const service = new MaintenanceService({
@@ -53,6 +59,25 @@ describe('MaintenanceService', () => {
       ...previous,
       ...data,
     }));
+  });
+  it('checks ownership and constrains the physical delete to the owner', async () => {
+    expect(await service.delete('owner', id)).toBe(true);
+    expect(db.maintenanceEvent.findFirst).toHaveBeenCalledWith({
+      where: { id, vehicle: { userId: 'owner' } },
+    });
+    expect(db.maintenanceEvent.delete).toHaveBeenCalledWith({
+      where: { id, vehicle: { userId: 'owner' } },
+    });
+  });
+  it('does not delete inaccessible or invalid events', async () => {
+    db.maintenanceEvent.findFirst.mockResolvedValue(null);
+    await expect(service.delete('other', id)).rejects.toMatchObject({
+      extensions: { code: 'MAINTENANCE_EVENT_NOT_FOUND' },
+    });
+    await expect(service.delete('owner', 'bad')).rejects.toMatchObject({
+      extensions: { code: 'VALIDATION_ERROR' },
+    });
+    expect(db.maintenanceEvent.delete).not.toHaveBeenCalled();
   });
   it('projects category codes with deterministic database ordering', async () => {
     db.category.findMany.mockResolvedValue([{ id: categoryId, name: 'OTHER' }]);

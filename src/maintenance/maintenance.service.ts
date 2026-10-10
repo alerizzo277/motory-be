@@ -92,6 +92,19 @@ export class MaintenanceService {
     return publicEvent(await this.ownedEvent(this.prisma, userId, id));
   }
 
+  async delete(userId: string, id: string) {
+    try {
+      await this.ownedEvent(this.prisma, userId, id);
+      // Recheck ownership in the write to protect against changes after the read.
+      await this.prisma.maintenanceEvent.delete({ where: { id, vehicle: { userId } } });
+      return true;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
+        throw applicationError('MAINTENANCE_EVENT_NOT_FOUND', 'Maintenance event not found.');
+      throw error;
+    }
+  }
+
   private async validate(
     db: Prisma.TransactionClient,
     input: Omit<CreateMaintenanceEventInput, 'vehicleId' | 'nextScheduledEvent'>,
