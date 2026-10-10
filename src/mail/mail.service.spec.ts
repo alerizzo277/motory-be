@@ -47,6 +47,19 @@ describe('MailService', () => {
       from: 'sender@example.com',
     });
   });
+  it('sends a branded password notification without credentials, tokens or action links', async () => {
+    send.mockResolvedValue({ data: { id: 'email-id' }, error: null });
+    await service.sendPasswordChangedEmail('owner@example.com');
+    const options = send.mock.calls[0][0];
+    expect(options).toMatchObject({
+      to: 'owner@example.com',
+      subject: 'Motory - Password modificata',
+      from: 'sender@example.com',
+    });
+    expect(options.html).toContain('La password del tuo account Motory');
+    expect(options.html).toContain('sicurezza del tuo account');
+    expect(options.html).not.toMatch(/passwordHash|currentPassword|newPassword|token|href=/);
+  });
 
   it.each([
     { data: null, error: { message: 'Rejected', name: 'validation_error' } },

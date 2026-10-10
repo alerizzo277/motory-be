@@ -25,6 +25,9 @@ describe('Authentication GraphQL', () => {
   let roles: Role[];
   let tokens: ActionToken[] = [];
   const mail = {
+    sendPasswordChangedEmail: vi.fn<MailService['sendPasswordChangedEmail']>(() =>
+      Promise.resolve({ id: 'mail' }),
+    ),
     sendVerificationEmail: vi.fn<MailService['sendVerificationEmail']>(() =>
       Promise.resolve({ id: 'mail' }),
     ),
@@ -99,10 +102,28 @@ describe('Authentication GraphQL', () => {
       ),
     },
     user: {
-      update: vi.fn(({ data }: { data: Partial<User> }) => {
-        Object.assign(stored!, data);
-        return Promise.resolve(stored);
-      }),
+      update: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; passwordHash?: string };
+          data: Partial<User>;
+        }) => {
+          if (failDatabase) throw new Error('Sensitive database detail');
+          if (
+            !stored ||
+            stored.id !== where.id ||
+            (where.passwordHash && stored.passwordHash !== where.passwordHash)
+          )
+            throw new Prisma.PrismaClientKnownRequestError('Private database details', {
+              code: 'P2025',
+              clientVersion: '7',
+            });
+          Object.assign(stored!, data);
+          return Promise.resolve(stored);
+        },
+      ),
       findUnique: vi.fn(({ where }: { where: { email?: string; id?: string } }) => {
         if (failDatabase) throw new Error('Sensitive database detail');
         return Promise.resolve(
@@ -202,6 +223,155 @@ describe('Authentication GraphQL', () => {
   });
   afterAll(async () => {
     await app?.close();
+  });
+  const change = 'mutation($input: ChangePasswordInput!) { changePassword(input: $input) }';
+  async function session() {
+    await gql(register, { input });
+    return new JwtService().sign({ sub: stored!.id, role: 'USER' }, { secret, expiresIn: 3600 });
+  }
+  it.each(['abcdefgh', '        ', ' New Password '])(
+    'changes to an exact valid password and retains the current JWT',
+    async (newPassword) => {
+      const jwt = await session();
+      const before = { ...stored! };
+      const result = await gql(
+        change,
+        { input: { currentPassword: input.password, newPassword } },
+        jwt,
+      );
+      expect(result.body).toEqual({ data: { changePassword: true } });
+      expect(stored).toMatchObject({ ...before, passwordHash: expect.any(String) });
+      expect(stored!.passwordHash).not.toBe(newPassword);
+      expect(stored!.passwordHash).not.toBe(before.passwordHash);
+      expect(stored!.passwordHash).toMatch(/^\$argon2id\$/);
+      expect(await verify(stored!.passwordHash, newPassword)).toBe(true);
+      expect(await verify(stored!.passwordHash, input.password)).toBe(false);
+      expect((await gql('{ me { id } }', {}, jwt)).body.data.me.id).toBe(before.id);
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: before.id, passwordHash: before.passwordHash },
+        data: { passwordHash: stored!.passwordHash },
+        select: { id: true },
+      });
+      expect(mail.sendPasswordChangedEmail).toHaveBeenCalledWith(before.email);
+      expect(prisma.user.update.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        mail.sendPasswordChangedEmail.mock.invocationCallOrder[0],
+      );
+    },
+  );
+  it.each([
+    [{ currentPassword: 'wrong', newPassword: 'abcdefgh' }, 'INVALID_CURRENT_PASSWORD'],
+    [{ currentPassword: input.password, newPassword: 'short' }, 'VALIDATION_ERROR'],
+    [{ currentPassword: input.password, newPassword: input.password }, 'PASSWORD_UNCHANGED'],
+    [
+      { currentPassword: input.password, newPassword: 'abcdefgh', userId: randomUUID() },
+      'VALIDATION_ERROR',
+    ],
+    [
+      { currentPassword: input.password, newPassword: 'abcdefgh', confirmPassword: 'abcdefgh' },
+      'VALIDATION_ERROR',
+    ],
+  ])('rejects invalid changes without updating or emailing (%s)', async (patch, code) => {
+    const jwt = await session();
+    const before = stored!.passwordHash;
+    expect((await gql(change, { input: patch }, jwt)).body.errors[0].extensions.code).toBe(code);
+    expect(stored!.passwordHash).toBe(before);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(mail.sendPasswordChangedEmail).not.toHaveBeenCalled();
+  });
+  it('requires authentication and does not disclose mutation secrets', async () => {
+    const result = await gql(change, {
+      input: { currentPassword: input.password, newPassword: 'abcdefgh' },
+    });
+    expect(result.body.errors[0].extensions.code).toBe('UNAUTHENTICATED');
+    expect(mail.sendPasswordChangedEmail).not.toHaveBeenCalled();
+  });
+  it('keeps the password change successful on notification failure with safe logging', async () => {
+    const jwt = await session();
+    mail.sendPasswordChangedEmail.mockRejectedValueOnce(new Error('Sensitive email payload'));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    expect(
+      (
+        await gql(
+          change,
+          { input: { currentPassword: input.password, newPassword: 'abcdefgh' } },
+          jwt,
+        )
+      ).body,
+    ).toEqual({ data: { changePassword: true } });
+    expect(await verify(stored!.passwordHash, 'abcdefgh')).toBe(true);
+    expect(warn).toHaveBeenCalledWith('Password change notification could not be delivered');
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+      /Sensitive|alice@example|password123|abcdefgh|argon2/,
+    );
+  });
+  it('conceals write failures and sends no notification', async () => {
+    const jwt = await session();
+    const before = stored!.passwordHash;
+    prisma.user.update.mockRejectedValueOnce(new Error('Private database detail'));
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    const result = await gql(
+      change,
+      { input: { currentPassword: input.password, newPassword: 'abcdefgh' } },
+      jwt,
+    );
+    expect(result.body.errors[0]).toMatchObject({
+      message: 'An unexpected error occurred.',
+      extensions: { code: 'INTERNAL_SERVER_ERROR' },
+    });
+    expect(JSON.stringify(result.body)).not.toMatch(/Private|password123|abcdefgh|argon2/);
+    expect(stored!.passwordHash).toBe(before);
+    expect(mail.sendPasswordChangedEmail).not.toHaveBeenCalled();
+  });
+  it('does not overwrite a competing password update', async () => {
+    const jwt = await session();
+    prisma.user.update.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Private', { code: 'P2025', clientVersion: '7' }),
+    );
+    expect(
+      (
+        await gql(
+          change,
+          { input: { currentPassword: input.password, newPassword: 'abcdefgh' } },
+          jwt,
+        )
+      ).body.errors[0].extensions.code,
+    ).toBe('INVALID_CURRENT_PASSWORD');
+    expect(mail.sendPasswordChangedEmail).not.toHaveBeenCalled();
+  });
+  it.each(['1234567', 'x'.repeat(129)])(
+    'registration, reset and change share the password length policy',
+    async (password) => {
+      expect(
+        (await gql(register, { input: { ...input, password } })).body.errors[0].extensions.code,
+      ).toBe('VALIDATION_ERROR');
+      expect(
+        (await gql(reset, { input: { token: 'test', newPassword: password } })).body.errors[0]
+          .extensions.code,
+      ).toBe('VALIDATION_ERROR');
+      const jwt = await session();
+      expect(
+        (
+          await gql(
+            change,
+            { input: { currentPassword: input.password, newPassword: password } },
+            jwt,
+          )
+        ).body.errors[0].extensions.code,
+      ).toBe('VALIDATION_ERROR');
+    },
+  );
+  it('publishes only the password input fields and Boolean result', async () => {
+    const schema = buildClientSchema((await gql(getIntrospectionQuery())).body.data);
+    const operation = schema.getMutationType()!.getFields().changePassword;
+    expect(String(operation.type)).toBe('Boolean!');
+    expect(operation.args.map((arg) => [arg.name, String(arg.type)])).toEqual([
+      ['input', 'ChangePasswordInput!'],
+    ]);
+    const type = schema.getType('ChangePasswordInput');
+    expect(type && 'getFields' in type ? Object.keys(type.getFields()) : []).toEqual([
+      'currentPassword',
+      'newPassword',
+    ]);
   });
   it('registers without login, hashes with Argon2id, logs in and reads fresh user data', async () => {
     const sign = vi.spyOn(app.get(JwtService), 'signAsync');

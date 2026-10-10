@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { vehicleDeletionEmail } from './templates/vehicle-deletion-email.js';
 import type { DeletedVehicleInformation } from './templates/vehicle-deletion-email.js';
 import { actionEmail } from './templates/action-email.js';
+import { passwordChangedEmail } from './templates/password-changed-email.js';
 import { Resend } from 'resend';
 
 export interface SendEmailOptions {
@@ -54,6 +55,13 @@ export class MailService {
         minutes,
         true,
       ),
+    });
+  }
+  sendPasswordChangedEmail(to: string) {
+    return this.sendEmail({
+      to,
+      subject: 'Motory - Password modificata',
+      html: passwordChangedEmail(),
     });
   }
   sendVehicleDeletionEmail(to: string, vehicle: DeletedVehicleInformation, retentionDays: number) {

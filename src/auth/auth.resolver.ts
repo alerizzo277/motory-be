@@ -1,7 +1,13 @@
 import { Inject, UseGuards, UsePipes } from '@nestjs/common';
 import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { AuthService } from './auth.service.js';
-import { EmailInput, ResetPasswordInput, LoginInput, RegisterInput } from './dto/auth.input.js';
+import {
+  ChangePasswordInput,
+  EmailInput,
+  ResetPasswordInput,
+  LoginInput,
+  RegisterInput,
+} from './dto/auth.input.js';
 import { RegisterPayload } from './models/register-payload.model.js';
 import { AuthWarningsPayload } from './models/auth-warning.model.js';
 import { AuthPayload } from './models/auth-payload.model.js';
@@ -26,6 +32,14 @@ export class AuthResolver {
     @Args('input', { type: () => UpdateProfileInput }) input: UpdateProfileInput,
   ) {
     return this.users.updateProfile(user.id, input);
+  }
+  @Mutation(() => Boolean)
+  @UseGuards(GqlAuthGuard)
+  changePassword(
+    @CurrentUser() user: AuthenticatedUser,
+    @Args('input', { type: () => ChangePasswordInput }) input: ChangePasswordInput,
+  ) {
+    return this.auth.changePassword(user.id, input.currentPassword, input.newPassword);
   }
   @Mutation(() => RegisterPayload)
   register(@Args('input', { type: () => RegisterInput }) input: RegisterInput) {

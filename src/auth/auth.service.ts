@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { ActionTokenType } from '../generated/prisma/client.js';
+import { ActionTokenType, Prisma } from '../generated/prisma/client.js';
 import { MailService } from '../mail/mail.service.js';
 import { AuthWarning, VERIFICATION_EMAIL_SEND_FAILED } from './models/auth-warning.model.js';
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -10,6 +10,7 @@ import { argon2id, hash, verify } from 'argon2';
 import { UsersService, publicUser } from '../users/users.service.js';
 import { applicationError } from '../common/graphql-errors.js';
 import type { LoginInput, RegisterInput } from './dto/auth.input.js';
+import { validatePassword } from './password-policy.js';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -27,6 +28,7 @@ export class AuthService {
     this.ttl(ActionTokenType.PASSWORD_RESET);
   }
   async register(input: RegisterInput) {
+    validatePassword(input.password);
     if (await this.users.findByEmail(input.email)) {
       throw applicationError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists.');
     }
@@ -177,9 +179,36 @@ export class AuthService {
     return this.consumeToken(token, ActionTokenType.EMAIL_VERIFICATION);
   }
   async resetPassword(token: string, newPassword: string) {
-    if (newPassword.length < 8 || newPassword.length > 128)
-      throw applicationError('VALIDATION_ERROR', 'Password must contain 8 to 128 characters.');
+    validatePassword(newPassword);
     return this.consumeToken(token, ActionTokenType.PASSWORD_RESET, newPassword);
+  }
+  async changePassword(id: string, currentPassword: string, newPassword: string) {
+    const user = await this.users.findById(id);
+    if (!user) throw applicationError('USER_NOT_FOUND', 'The authenticated user no longer exists.');
+    if (!(await verify(user.passwordHash, currentPassword)))
+      throw applicationError('INVALID_CURRENT_PASSWORD', 'The current password is incorrect.');
+    validatePassword(newPassword);
+    if (newPassword === currentPassword)
+      throw applicationError('PASSWORD_UNCHANGED', 'Choose a different new password.');
+    const passwordHash = await hash(newPassword, { type: argon2id });
+    try {
+      // Do not overwrite a password changed by a competing request after verification.
+      await this.prisma.user.update({
+        where: { id, passwordHash: user.passwordHash },
+        data: { passwordHash },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
+        throw applicationError('INVALID_CURRENT_PASSWORD', 'The current password is incorrect.');
+      throw error;
+    }
+    try {
+      await this.mail.sendPasswordChangedEmail(user.email);
+    } catch {
+      this.logger.warn('Password change notification could not be delivered');
+    }
+    return true;
   }
   async me(id: string) {
     const user = await this.users.findById(id);

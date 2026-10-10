@@ -2,6 +2,7 @@ import { Field, InputType } from '@nestjs/graphql';
 import { Transform } from 'class-transformer';
 import { IsEmail, IsString, Length, MaxLength, MinLength } from 'class-validator';
 import { normalizeEmail } from '../../users/users.service.js';
+import { PASSWORD_POLICY } from '../password-policy.js';
 @InputType()
 export class LoginInput {
   @Field(() => String)
@@ -28,7 +29,7 @@ export class RegisterInput {
   email: string;
   @Field(() => String)
   @IsString()
-  @Length(8, 128)
+  @Length(PASSWORD_POLICY.minLength, PASSWORD_POLICY.maxLength)
   password: string;
   @Field(() => String)
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
@@ -60,6 +61,19 @@ export class ResetPasswordInput {
   token: string;
   @Field(() => String)
   @IsString()
-  @Length(8, 128)
+  @Length(PASSWORD_POLICY.minLength, PASSWORD_POLICY.maxLength)
+  newPassword: string;
+}
+
+@InputType()
+export class ChangePasswordInput {
+  @Field(() => String)
+  @IsString()
+  @Length(1, PASSWORD_POLICY.maxLength)
+  currentPassword: string;
+
+  @Field(() => String)
+  @IsString()
+  @Length(PASSWORD_POLICY.minLength, PASSWORD_POLICY.maxLength)
   newPassword: string;
 }
