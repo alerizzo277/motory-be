@@ -1,5 +1,6 @@
+import { Prisma } from '../generated/prisma/client.js';
 import { GraphQLError, type GraphQLFormattedError } from 'graphql';
-import { ValidationPipe } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 
 export type ErrorCode =
   | 'EMAIL_NOT_VERIFIED'
@@ -42,7 +43,10 @@ const publicCodes = new Set([
   'USER_NOT_FOUND',
   'VALIDATION_ERROR',
 ]);
-export function formatGraphqlError(error: GraphQLFormattedError): GraphQLFormattedError {
+export function formatGraphqlError(
+  error: GraphQLFormattedError,
+  originalError?: unknown,
+): GraphQLFormattedError {
   const code =
     typeof error.extensions?.code === 'string' ? error.extensions.code : 'INTERNAL_SERVER_ERROR';
   if (publicCodes.has(code)) {
@@ -64,6 +68,22 @@ export function formatGraphqlError(error: GraphQLFormattedError): GraphQLFormatt
       extensions: { code: 'VALIDATION_ERROR' },
     };
   }
+  const cause =
+    originalError instanceof GraphQLError
+      ? (originalError.originalError ?? originalError)
+      : originalError;
+  const databaseFailure =
+    cause instanceof Prisma.PrismaClientKnownRequestError ||
+    cause instanceof Prisma.PrismaClientUnknownRequestError ||
+    cause instanceof Prisma.PrismaClientInitializationError ||
+    cause instanceof Prisma.PrismaClientValidationError;
+  new Logger('GraphQL').error({
+    message: 'Unexpected GraphQL failure',
+    category: databaseFailure ? 'DATABASE_FAILURE' : 'INTERNAL_SERVER_ERROR',
+    ...(cause instanceof Prisma.PrismaClientKnownRequestError && /^P\d{4}$/.test(cause.code)
+      ? { databaseCode: cause.code }
+      : {}),
+  });
   return {
     message: 'An unexpected error occurred.',
     path: error.path,

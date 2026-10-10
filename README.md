@@ -276,3 +276,22 @@ La suite e2e esegue prima la build per mantenere i metadata dei decorator Nest
 necessari alla validazione. I test auth usano Prisma simulato e Argon2/JWT reali:
 flusso completo, email duplicate, errori credenziali, token invalidi/scaduti,
 utente eliminato, validazione e mancata esposizione di hash e dettagli interni.
+
+## Application logging
+
+`NODE_ENV` supports `development` (the default), `production`, and `test`.
+Development uses standard readable NestJS console output through `log` severity.
+Production uses native NestJS JSON output, one entry per line, through `warn`.
+Tests disable application logging by default.
+
+`LOG_LEVEL` optionally selects the minimum severity: `fatal`, `error`, `warn`,
+`log`, `debug`, or `verbose`. For example, `warn` enables `fatal`, `error`, and
+`warn`; an explicit value also enables logging in tests. Invalid values prevent
+startup with a configuration error. Logs go to stdout/stderr; no files are created.
+
+Expected authentication and validation failures are silent. Unexpected GraphQL
+failures are logged by the central formatter with safe categories and, for known
+Prisma failures, a validated error code. Auth workflows log handled email delivery
+failures once while preserving registration warnings and neutral recovery responses.
+Raw exception messages, provider responses, credentials, and recipient addresses
+are excluded from these diagnostics.

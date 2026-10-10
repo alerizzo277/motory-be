@@ -1,3 +1,4 @@
+import { GraphqlExceptionFilter } from '../dist/common/graphql-exception.filter.js';
 import { readFileSync } from 'node:fs';
 import { buildClientSchema, getIntrospectionQuery, parse, validate } from 'graphql';
 import { Test } from '@nestjs/testing';
@@ -174,6 +175,7 @@ describe('Authentication GraphQL', () => {
       .useValue(mail)
       .compile();
     app = module.createNestApplication({ logger: false });
+    app.useGlobalFilters(new GraphqlExceptionFilter());
     await app.init();
   });
   beforeEach(() => {
@@ -534,19 +536,32 @@ describe('Authentication GraphQL', () => {
     const schema = buildClientSchema((await gql(getIntrospectionQuery())).body.data);
     for (const [, document] of documents) expect(validate(schema, parse(document))).toEqual([]);
   });
+  it('does not log expected authentication and validation failures', async () => {
+    const log = vi.spyOn(Logger.prototype, 'error');
+    await gql(login, { input: { email: input.email, password: input.password } });
+    await gql(register, { input: { ...input, password: 'short' } });
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
+  });
   it('rolls back verification if token deletion fails', async () => {
+    const log = vi.spyOn(Logger.prototype, 'error');
     await gql(register, { input });
     prisma.actionToken.delete.mockRejectedValueOnce(new Error('Delete failure'));
     const token = rawToken();
     expect((await gql(verifyEmail, { token })).body.errors[0].extensions.code).toBe(
       'INTERNAL_SERVER_ERROR',
     );
+    expect(log).toHaveBeenCalledExactlyOnceWith({
+      message: 'Unexpected GraphQL failure',
+      category: 'INTERNAL_SERVER_ERROR',
+    });
+    log.mockRestore();
     expect(stored!.emailVerifiedAt).toBeNull();
     expect(tokens).toHaveLength(1);
     expect((await gql(verifyEmail, { token })).body.data.verifyEmail).toBe(true);
   });
   it('returns registration success with a warning and preserves user and token on mail failure', async () => {
-    const log = vi.spyOn(Logger.prototype, 'warn');
+    const log = vi.spyOn(Logger.prototype, 'error');
     const cause = {
       statusCode: 403,
       name: 'validation_error',
@@ -561,10 +576,10 @@ describe('Authentication GraphQL', () => {
     expect(result.body.data.register.warnings).toEqual([
       { code: 'VERIFICATION_EMAIL_SEND_FAILED' },
     ]);
-    expect(log).toHaveBeenCalledWith({
-      event: 'AUTH_EMAIL_SEND_FAILED',
+    expect(log).toHaveBeenCalledExactlyOnceWith({
+      message: 'Authentication email delivery failed',
+      category: 'MAIL_DELIVERY_FAILED',
       type: 'EMAIL_VERIFICATION',
-      cause,
     });
     log.mockRestore();
     expect(stored!.emailVerifiedAt).toBeNull();

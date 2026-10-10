@@ -1,3 +1,5 @@
+import { APP_FILTER } from '@nestjs/core';
+import { GraphqlExceptionFilter } from './common/graphql-exception.filter.js';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo';
@@ -24,6 +26,6 @@ import { formatGraphqlError } from './common/graphql-errors.js';
     }),
   ],
   controllers: [AppController],
-  providers: [AppService, AppResolver],
+  providers: [AppService, AppResolver, { provide: APP_FILTER, useClass: GraphqlExceptionFilter }],
 })
 export class AppModule {}

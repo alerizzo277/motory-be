@@ -117,15 +117,11 @@ export class AuthService {
       if (type === ActionTokenType.EMAIL_VERIFICATION)
         await this.mail.sendVerificationEmail(email, url.toString(), minutes);
       else await this.mail.sendPasswordResetEmail(email, url.toString(), minutes);
-    } catch (error: unknown) {
-      const cause = error instanceof Error ? (error.cause ?? error) : error;
-      this.logger.warn({
-        event: 'AUTH_EMAIL_SEND_FAILED',
+    } catch {
+      this.logger.error({
+        message: 'Authentication email delivery failed',
+        category: 'MAIL_DELIVERY_FAILED',
         type,
-        cause:
-          cause instanceof Error
-            ? { name: cause.name, message: cause.message, stack: cause.stack }
-            : cause,
       });
       if (type === ActionTokenType.EMAIL_VERIFICATION) {
         // Preserve the token and its createdAt cooldown after delivery failure.
