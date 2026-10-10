@@ -25,8 +25,12 @@ describe('Authentication GraphQL', () => {
   let roles: Role[];
   let tokens: ActionToken[] = [];
   const mail = {
-    sendVerificationEmail: vi.fn().mockResolvedValue({ id: 'mail' }),
-    sendPasswordResetEmail: vi.fn().mockResolvedValue({ id: 'mail' }),
+    sendVerificationEmail: vi.fn<MailService['sendVerificationEmail']>(() =>
+      Promise.resolve({ id: 'mail' }),
+    ),
+    sendPasswordResetEmail: vi.fn<MailService['sendPasswordResetEmail']>(() =>
+      Promise.resolve({ id: 'mail' }),
+    ),
   };
   const digest = (token: string) => createHash('sha256').update(token).digest('hex');
   const rawToken = (reset = false): string => {
@@ -68,7 +72,7 @@ describe('Authentication GraphQL', () => {
     (!where.userId_type ||
       (item.userId === where.userId_type.userId && item.type === where.userId_type.type));
   const prisma = {
-    $queryRaw: vi.fn().mockResolvedValue([]),
+    $queryRaw: vi.fn(() => Promise.resolve([])),
     actionToken: {
       findUnique: vi.fn(({ where }: { where: TokenWhere }) =>
         Promise.resolve(tokens.find((item) => matches(item, where)) ?? null),
@@ -150,6 +154,8 @@ describe('Authentication GraphQL', () => {
         ConfigModule.forRoot({
           isGlobal: true,
           ignoreEnvFile: true,
+          ignoreEnvVars: true,
+          skipProcessEnv: true,
           load: [
             () => ({
               JWT_SECRET: secret,
@@ -163,6 +169,8 @@ describe('Authentication GraphQL', () => {
         GraphQLModule.forRoot<ApolloDriverConfig>({
           driver: ApolloDriver,
           autoSchemaFile: true,
+          // Contract tests require introspection even when NODE_ENV is inherited as production.
+          introspection: true,
           includeStacktraceInErrorResponses: false,
           formatError: formatGraphqlError,
         }),
@@ -185,8 +193,12 @@ describe('Authentication GraphQL', () => {
       { id: randomUUID(), name: 'USER' },
       { id: randomUUID(), name: 'ADMIN' },
     ];
-    vi.clearAllMocks();
+    // Vitest restores vi.fn(implementation) baselines and discards queued responses.
+    vi.resetAllMocks();
     failDatabase = false;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
   afterAll(async () => {
     await app?.close();
@@ -195,7 +207,6 @@ describe('Authentication GraphQL', () => {
     const sign = vi.spyOn(app.get(JwtService), 'signAsync');
     const registered = await gql(register, { input });
     expect(sign).not.toHaveBeenCalled();
-    sign.mockRestore();
     expect(registered.body.errors).toBeUndefined();
     expect(registered.body.data.register.user).toMatchObject({
       email: 'alice@example.com',
@@ -382,7 +393,6 @@ describe('Authentication GraphQL', () => {
     });
     expect(result.body.errors[0].extensions.code).toBe('EMAIL_NOT_VERIFIED');
     expect(sign).not.toHaveBeenCalled();
-    sign.mockRestore();
   });
   it('verifies once, deletes the token and then allows login', async () => {
     await gql(register, { input });
@@ -541,7 +551,6 @@ describe('Authentication GraphQL', () => {
     await gql(login, { input: { email: input.email, password: input.password } });
     await gql(register, { input: { ...input, password: 'short' } });
     expect(log).not.toHaveBeenCalled();
-    log.mockRestore();
   });
   it('rolls back verification if token deletion fails', async () => {
     const log = vi.spyOn(Logger.prototype, 'error');
@@ -555,7 +564,6 @@ describe('Authentication GraphQL', () => {
       message: 'Unexpected GraphQL failure',
       category: 'INTERNAL_SERVER_ERROR',
     });
-    log.mockRestore();
     expect(stored!.emailVerifiedAt).toBeNull();
     expect(tokens).toHaveLength(1);
     expect((await gql(verifyEmail, { token })).body.data.verifyEmail).toBe(true);
@@ -581,7 +589,6 @@ describe('Authentication GraphQL', () => {
       category: 'MAIL_DELIVERY_FAILED',
       type: 'EMAIL_VERIFICATION',
     });
-    log.mockRestore();
     expect(stored!.emailVerifiedAt).toBeNull();
     expect(tokens).toHaveLength(1);
     expect(prisma.actionToken.deleteMany).toHaveBeenCalledTimes(1); // Replacement before creation only.

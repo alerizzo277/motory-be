@@ -1,12 +1,15 @@
 import { Logger } from '@nestjs/common';
+import type { MockInstance } from 'vitest';
 import { GraphQLError } from 'graphql';
 import { applicationError, formatGraphqlError } from './graphql-errors.js';
 import { Prisma } from '../generated/prisma/client.js';
 
 describe('GraphQL diagnostics', () => {
-  const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
-  beforeEach(() => log.mockClear());
-  afterAll(() => log.mockRestore());
+  let log: MockInstance<Logger['error']>;
+  beforeEach(() => {
+    log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
   it.each([
     'INVALID_CREDENTIALS',
     'UNAUTHENTICATED',

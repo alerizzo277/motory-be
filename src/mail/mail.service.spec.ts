@@ -25,7 +25,8 @@ describe('MailService', () => {
   let service: MailService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    send.mockReset();
+    constructor.mockReset();
     service = new MailService(
       new ConfigService({
         RESEND_API_KEY: 'test-api-key',
@@ -33,6 +34,7 @@ describe('MailService', () => {
       }),
     );
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it('uses configured credentials and sender and returns the accepted email id', async () => {
     send.mockResolvedValue({ data: { id: 'email-id' }, error: null });
