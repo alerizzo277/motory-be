@@ -10,10 +10,23 @@ import { GqlAuthGuard } from './guards/gql-auth.guard.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from './auth.types.js';
 import { authValidationPipe } from '../common/graphql-errors.js';
+import { UsersService } from '../users/users.service.js';
+import { UpdateProfileInput } from '../users/dto/update-profile.input.js';
 @Resolver()
 @UsePipes(authValidationPipe())
 export class AuthResolver {
-  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
+  constructor(
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(UsersService) private readonly users: UsersService,
+  ) {}
+  @Mutation(() => User)
+  @UseGuards(GqlAuthGuard)
+  updateProfile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Args('input', { type: () => UpdateProfileInput }) input: UpdateProfileInput,
+  ) {
+    return this.users.updateProfile(user.id, input);
+  }
   @Mutation(() => RegisterPayload)
   register(@Args('input', { type: () => RegisterInput }) input: RegisterInput) {
     return this.auth.register(input);

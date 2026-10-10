@@ -7,11 +7,23 @@ import { authValidationPipe } from '../common/graphql-errors.js';
 import { CreateVehicleInput, UpdateVehicleInput } from './dto/vehicle.input.js';
 import { Vehicle } from './models/vehicle.model.js';
 import { VehiclesService } from './vehicles.service.js';
+import { DeletedVehicle } from './models/deleted-vehicle.model.js';
 @Resolver(() => Vehicle)
 @UseGuards(GqlAuthGuard)
 @UsePipes(authValidationPipe())
 export class VehiclesResolver {
   constructor(@Inject(VehiclesService) private readonly vehiclesService: VehiclesService) {}
+  @Query(() => [DeletedVehicle])
+  deletedVehicles(@CurrentUser() user: AuthenticatedUser) {
+    return this.vehiclesService.deletedVehicles(user.id);
+  }
+  @Mutation(() => Boolean)
+  restoreVehicle(
+    @CurrentUser() user: AuthenticatedUser,
+    @Args('id', { type: () => ID }) id: string,
+  ) {
+    return this.vehiclesService.restore(user.id, id);
+  }
   @Query(() => [Vehicle])
   vehicles(@CurrentUser() user: AuthenticatedUser) {
     return this.vehiclesService.list(user.id);

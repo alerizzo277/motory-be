@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { applicationError } from '../common/graphql-errors.js';
+import { normalizeProfileName, type UpdateProfileInput } from './dto/update-profile.input.js';
 
 export const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 export type UserWithRole = Prisma.UserGetPayload<{ include: { role: true } }>;
@@ -16,6 +17,27 @@ export function publicUser({
 @Injectable()
 export class UsersService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  async updateProfile(id: string, input: UpdateProfileInput) {
+    const data: { firstName?: string; lastName?: string } = {};
+    for (const field of ['firstName', 'lastName'] as const) {
+      const value = input[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'string') throw applicationError('VALIDATION_ERROR', 'Invalid name.');
+      const normalized = normalizeProfileName(value);
+      if (!normalized || normalized.length > 100)
+        throw applicationError('VALIDATION_ERROR', 'Names must contain 1 to 100 characters.');
+      data[field] = normalized;
+    }
+    try {
+      return publicUser(
+        await this.prisma.user.update({ where: { id }, data, include: { role: true } }),
+      );
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
+        throw applicationError('USER_NOT_FOUND', 'The authenticated user no longer exists.');
+      throw error;
+    }
+  }
   findByEmail(email: string) {
     return this.prisma.user.findUnique({
       where: { email: normalizeEmail(email) },

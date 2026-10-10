@@ -49,6 +49,53 @@ export class VehiclesService {
       throw new Error('VEHICLE_DELETION_RETENTION_DAYS must be a positive GraphQL integer');
     return days;
   }
+  private recoveryWindow() {
+    // Fixed elapsed UTC milliseconds, shared by listing and the conditional restoration write.
+    const durationMs = this.deletionRetentionDays() * 24 * 60 * 60 * 1000;
+    return { durationMs, cutoff: new Date(Date.now() - durationMs) };
+  }
+  async deletedVehicles(userId: string) {
+    const { cutoff, durationMs } = this.recoveryWindow();
+    const rows = await this.prisma.vehicle.findMany({
+      where: { userId, deletedAt: { gt: cutoff } },
+      orderBy: [{ deletedAt: 'desc' }, { id: 'desc' }],
+      select: {
+        id: true,
+        brand: true,
+        model: true,
+        year: true,
+        licensePlate: true,
+        deletedAt: true,
+      },
+    });
+    return rows.flatMap((vehicle) =>
+      vehicle.deletedAt === null
+        ? []
+        : [
+            {
+              ...vehicle,
+              recoveryDeadline: new Date(vehicle.deletedAt.getTime() + durationMs),
+            },
+          ],
+    );
+  }
+  async restore(userId: string, id: string) {
+    checkId(id);
+    const { cutoff } = this.recoveryWindow();
+    try {
+      // Null, expired and foreign records cannot match; competing updates have one winner.
+      await this.prisma.vehicle.update({
+        where: { id, userId, deletedAt: { gt: cutoff } },
+        data: { deletedAt: null },
+        select: { id: true },
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
+        throw applicationError('VEHICLE_NOT_FOUND', 'Vehicle not found.');
+      throw error;
+    }
+  }
   async delete(userId: string, id: string) {
     checkId(id);
     const retentionDays = this.deletionRetentionDays();
